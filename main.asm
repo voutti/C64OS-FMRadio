@@ -67,6 +67,9 @@ frq_max  = 1080    ;108.0 MHz
 c_on     = cgreen  ;toggle button on colour
 c_off    = cdgrey  ;toggle button off colour
 
+;--- debug ---
+DEBUG    = 1       ;1 = log each i2c register write in the status label; set 0 to remove
+
 ;--- widget store indices ---
 w_freq = 0
 w_stat = 1
@@ -79,8 +82,10 @@ w_volu = 7
 w_vold = 8
 w_scnu = 9
 w_scnd = 10
-w_frqu = 11
-w_frqd = 12
+w_fmu  = 11
+w_fmd  = 12
+w_fku  = 13
+w_fkd  = 14
 
 ;---------------------------------------
 ;Data Structures
@@ -136,8 +141,8 @@ st_vol   .byte $0a     ;volume 0..15
 st_freq  .word 1000    ;100kHz units -> 100.0 MHz
 
 ;--- widget pointer store (w_* indices) ---
-widgets  .word 0,0,0,0,0,0,0
-         .word 0,0,0,0,0,0
+widgets  .word 0,0,0,0,0,0,0,0
+         .word 0,0,0,0,0,0,0
 
 ;--- i2c buffer + scratch ---
 i2cbuf   .byte 0,0,0,0
@@ -165,6 +170,9 @@ gfhi     .byte 0
 gflo     .byte 0
 swto     .byte 0
 freqstr  .byte 0,0,0,0,0,0,0,0,0,0,0,0
+.if DEBUG
+dbgstr   .fill 20,0
+.endif
 
 ;--- strings ---
 msg_probe .null "Probing RDA5807..."
@@ -186,8 +194,10 @@ s_volup  .null "Vol +"
 s_voldn  .null "Vol -"
 s_scnup  .null "Scan >>"
 s_scndn  .null "Scan <<"
-s_frqup  .null "Freq >"
-s_frqdn  .null "Freq <"
+s_fmup   .null "++"
+s_fmdn   .null "--"
+s_fkup   .null "+"
+s_fkdn   .null "-"
 
 ;---------------------------------------
 
@@ -208,9 +218,21 @@ init
         ;Load i2c.lib and probe the RDA5807
         jsr radioinit
 
+        ;If the chip was detected, sync st_freq with
+        ;its current tuning (registers survive the i2c
+        ;bus reset), so the UI shows the real station.
+        lda radiomsg
+        cmp #<msg_rdyok
+        bne nordf
+        lda radiomsg+1
+        cmp #>msg_rdyok
+        bne nordf
+        jsr r_getfreq
+nordf
+
         ; Allocate memory for tk widgets
         lda #mapapp
-        ldx #5 ;UI object pool (~14 objects)
+        ldx #6 ;UI object pool (~15 objects)
         jsr pgalloc
         sty tkenv+te_mpool
 
@@ -512,8 +534,78 @@ i2cupdate
         lda #radioadr
         ldy updreg
         jsr i2cwritrg
+.if DEBUG
+        jsr dbgwrite
+.endif
 fail    rts
         .bend
+
+.if DEBUG
+;Temporary debug: show the last register write in
+;the status label as "0xYY = 0xZZZZ" (YY=register,
+;ZZZZ=16-bit value written). Set DEBUG=0 to remove.
+dbgwrite
+        .block
+        ldx #0
+        lda #"0"
+        sta dbgstr,x
+        inx
+        lda #"x"
+        sta dbgstr,x
+        inx
+        lda updreg
+        jsr putbyte
+        lda #" "
+        sta dbgstr,x
+        inx
+        lda #"="
+        sta dbgstr,x
+        inx
+        lda #" "
+        sta dbgstr,x
+        inx
+        lda #"0"
+        sta dbgstr,x
+        inx
+        lda #"x"
+        sta dbgstr,x
+        inx
+        lda i2cbuf        ;value hi byte
+        jsr putbyte
+        lda i2cbuf+1      ;value lo byte
+        jsr putbyte
+        lda #0
+        sta dbgstr,x
+        #copy16 dbgstr,mktp
+        ldx #w_stat
+        jmp slabel
+        .bend
+
+;A -> byte, X -> dbgstr index. Emits two hex
+;digits at dbgstr,x and advances X by 2.
+putbyte
+        .block
+        pha
+        lsr
+        lsr
+        lsr
+        lsr
+        jsr nib
+        pla
+        and #$0f
+nib     cmp #10
+        bcc dig
+        sec
+        sbc #10
+        clc
+        adc #"A"
+        bne sto
+dig     ora #"0"
+sto     sta dbgstr,x
+        inx
+        rts
+        .bend
+.endif
 
 ;Power on/off (st_pwr).
 r_power
@@ -642,33 +734,52 @@ r_vol
         jmp i2cupdate
         .bend
 
-;Set frequency from st_freq. WRCHAN=(freq-870)<<7.
+;Set frequency from st_freq. 100kHz spacing:
+;CHAN=freq-870 goes to reg 0x03 bits 15:6, with
+;SPACE=00 (100kHz) and TUNE=1.
 r_freq
         .block
         lda st_freq
         sec
         sbc #<frq_min
-        sta updtmp        ;d (high byte of freq-870 is 0)
+        sta updtmp        ;d = channel (100kHz steps, 0..210)
         lda #rd_chan
         sta updreg
         lda #$ff
         sta updmh
-        lda #$d3          ;WRCHAN|SPACE|TUNE low mask
+        lda #$d3          ;mask: CHANlo|TUNE|SPACE
         sta updml
-        lda updtmp
-        lsr               ;d>>1 -> hi val; carry = d bit0
-        sta updvh
+        lda updtmp        ;CHAN<<6 -> updvh:updvl
+        sta updvl
         lda #0
-        ror               ;(d&1)<<7
-        ora #$12          ;SPACE(2)|TUNE($10)
+        sta updvh
+        ldx #6
+shl6    asl updvl
+        rol updvh
+        dex
+        bne shl6
+        lda updvl
+        ora #m_tune       ;TUNE=1, SPACE=00 (100kHz)
         sta updvl
         jmp i2cupdate
         .bend
 
 ;Start scan. A=1 up, A=0 down.
+;Clear SEEK first so there is a fresh 0->1 edge
+;(this also clears a stale STC), then set the
+;direction + SEEK to start the new seek.
 r_scan
         .block
         pha
+        lda #rd_ctrl
+        sta updreg
+        lda #m_seek
+        sta updmh
+        lda #0
+        sta updml
+        sta updvl
+        sta updvh         ;SEEK=0
+        jsr i2cupdate
         lda #rd_ctrl
         sta updreg
         lda #(m_seekup|m_seek)
@@ -684,7 +795,7 @@ r_scan
         .bend
 
 ;Read the tuned frequency from the chip into
-;st_freq.  chan = reg3>>6;  freq = 870+(chan+1)/2.
+;st_freq.  chan = reg3>>6;  freq = 870+chan.
 r_getfreq
         .block
         #ldxy i2cbuf
@@ -704,11 +815,6 @@ sh      lsr gfhi
         ror gflo
         dex
         bne sh
-        inc gflo          ;chan+1
-        bne c1
-        inc gfhi
-c1      lsr gfhi          ;(chan+1)>>1
-        ror gflo
         lda gflo
         clc
         adc #<frq_min
@@ -720,11 +826,14 @@ fail    rts
         .bend
 
 ;Poll the seek/tune-complete bit (with timeout).
+;Delay before each read so a stale STC from a
+;previous seek isn't mistaken for this one.
 r_scanwait
         .block
-        lda #25
+        lda #30
         sta swto
-loop    #ldxy i2cbuf
+loop    jsr rdelay
+        #ldxy i2cbuf
         lda #2
         jsr i2cpreprw
         lda #radioadr
@@ -735,7 +844,6 @@ loop    #ldxy i2cbuf
         lda i2cbuf
         and #m_stc
         bne done          ;complete
-        jsr rdelay
         dec swto
         bne loop
 done    rts
@@ -1066,54 +1174,73 @@ buildui
         jsr mkbtn
         #storeset widgets,w_deem
         ;--- right column ---
-        #copy16 s_volup,mktp
-        #copy16 a_volu,mktg
-        lda #15
+        ;volume (- then +)
+        #copy16 s_voldn,mktp
+        #copy16 a_vold,mktg
+        lda #8
         sta mkw
         lda #3
         ldx #21
         jsr mkbtn
+        #storeset widgets,w_vold
+        #copy16 s_volup,mktp
+        #copy16 a_volu,mktg
+        lda #8
+        sta mkw
+        lda #3
+        ldx #29
+        jsr mkbtn
         #storeset widgets,w_volu
-        #copy16 s_voldn,mktp
-        #copy16 a_vold,mktg
-        lda #15
+        ;scan (<< then >>)
+        #copy16 s_scndn,mktp
+        #copy16 a_scnd,mktg
+        lda #8
         sta mkw
         lda #5
         ldx #21
         jsr mkbtn
-        #storeset widgets,w_vold
+        #storeset widgets,w_scnd
         #copy16 s_scnup,mktp
         #copy16 a_scnu,mktg
-        lda #15
+        lda #8
         sta mkw
-        lda #7
-        ldx #21
-        jsr mkbtn
-        #storeset widgets,w_scnu
-        #copy16 s_scndn,mktp
-        #copy16 a_scnd,mktg
-        lda #15
-        sta mkw
-        lda #9
-        ldx #21
-        jsr mkbtn
-        #storeset widgets,w_scnd
-        #copy16 s_frqup,mktp
-        #copy16 a_frqu,mktg
-        lda #7
-        sta mkw
-        lda #11
-        ldx #21
-        jsr mkbtn
-        #storeset widgets,w_frqu
-        #copy16 s_frqdn,mktp
-        #copy16 a_frqd,mktg
-        lda #7
-        sta mkw
-        lda #11
+        lda #5
         ldx #29
         jsr mkbtn
-        #storeset widgets,w_frqd
+        #storeset widgets,w_scnu
+        ;frequency (-- - ++ +)
+        #copy16 s_fmdn,mktp
+        #copy16 a_fmd,mktg
+        lda #4
+        sta mkw
+        lda #7
+        ldx #21
+        jsr mkbtn
+        #storeset widgets,w_fmd
+        #copy16 s_fkdn,mktp
+        #copy16 a_fkd,mktg
+        lda #4
+        sta mkw
+        lda #7
+        ldx #29
+        jsr mkbtn
+        #storeset widgets,w_fkd
+        #copy16 s_fmup,mktp
+        #copy16 a_fmu,mktg
+        lda #4
+        sta mkw
+        lda #7
+        ldx #25
+        jsr mkbtn
+        #storeset widgets,w_fmu
+        #copy16 s_fkup,mktp
+        #copy16 a_fku,mktg
+        lda #4
+        sta mkw
+        lda #7
+        ldx #33
+        jsr mkbtn
+        #storeset widgets,w_fku
         rts
         .bend
 
@@ -1222,13 +1349,49 @@ a_scnd
         jmp cbend
         .bend
 
-a_frqu
+a_fmu
         .block
         #pushptr this
-        inc st_freq
-        bne c
-        inc st_freq+1
-c       lda #>frq_max
+        lda #10           ;+1 MHz
+        jsr addfreq
+        jmp cbend
+        .bend
+
+a_fku
+        .block
+        #pushptr this
+        lda #1            ;+100 kHz
+        jsr addfreq
+        jmp cbend
+        .bend
+
+a_fmd
+        .block
+        #pushptr this
+        lda #10           ;-1 MHz
+        jsr subfreq
+        jmp cbend
+        .bend
+
+a_fkd
+        .block
+        #pushptr this
+        lda #1            ;-100 kHz
+        jsr subfreq
+        jmp cbend
+        .bend
+
+;Add A (100kHz units) to st_freq; wrap to frq_min
+;if it exceeds frq_max. Pushes freq and refreshes.
+addfreq
+        .block
+        clc
+        adc st_freq
+        sta st_freq
+        lda st_freq+1
+        adc #0
+        sta st_freq+1
+        lda #>frq_max
         cmp st_freq+1
         bcc wrap
         bne done
@@ -1237,17 +1400,21 @@ c       lda #>frq_max
         bcs done
 wrap    #copy16 frq_min,st_freq
 done    jsr r_freq
-        jsr updui
-        jmp cbend
+        jmp updui
         .bend
 
-a_frqd
+;Subtract A (100kHz units) from st_freq; wrap to
+;frq_max if it drops below frq_min. Pushes+refreshes.
+subfreq
         .block
-        #pushptr this
+        sta updtmp
         lda st_freq
-        bne d
-        dec st_freq+1
-d       dec st_freq
+        sec
+        sbc updtmp
+        sta st_freq
+        lda st_freq+1
+        sbc #0
+        sta st_freq+1
         lda st_freq+1
         cmp #>frq_min
         bcc wrap
@@ -1257,8 +1424,7 @@ d       dec st_freq
         bcs done
 wrap    #copy16 frq_max,st_freq
 done    jsr r_freq
-        jsr updui
-        jmp cbend
+        jmp updui
         .bend
 
 ;Common callback tail: restore this, mark dirty.
