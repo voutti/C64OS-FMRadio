@@ -36,6 +36,14 @@ cp ./icon.charset ./vice/mymount/01\ c64\ os/os/applications/MyTest/icon.charset
 cp ./menu.m ./vice/mymount/01\ c64\ os/os/applications/MyTest/menu.m,seq
 sync
 
+# Uncomment if you need local copy also
+rm -f ./temp/mytest/*.*
+cp ./main.o ./temp/mytest/main.o,prg
+cp ./about.t ./temp/mytest/about.t,seq
+cp ./icon.charset ./temp/mytest/icon.charset,seq
+cp ./menu.m ./temp/mytest/menu.m,seq
+sync
+
 #x64sc -IDE64image1 "./vice/c64os_ide64.hdd" ./vice/vice-snapshot-c64os_1.vsf -mouse
 # No need for -cartcrt, for example, if that is already included in the snapshot - just take more time in startup
 x64sc -cartcrt "./vice/idedos20190819-c64.crt" -IDE64image1 $IDE64HDD_IMAGE
