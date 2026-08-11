@@ -5,25 +5,25 @@
 ;stack. And pop them after the call.
 
 ;C Function Calls
-carg16 .macro
-         lda #<(\1)         ;Lo byte 1st
+carg16   .macro
+         lda #<\1         ;Lo byte 1st
          pha
-         lda #>(\1)         ;Hi byte 2nd
+         lda #>\1         ;Hi byte 2nd
          pha
-.endmacro
-carg8 .macro
-         lda #(\1)
+         .endm
+carg8    .macro
+         lda #\1
          pha
-.endmacro
+         .endm
 
-ccall .macro ;routine,sizeof_args
-         jsr (\1)
+ccall    .macro ;routine,sizeof_args
+         jsr \1
 
          ;pop arguments from the stack
          tsx
          txa
          clc
-         adc #(\2) ;sizeof args
+         adc #\2 ;sizeof args
          tax
          txs
-.endmacro
+         .endm

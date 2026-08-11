@@ -1,46 +1,30 @@
-;----[ menu.s ]-------------------------
-
-mnuicon  = $f2 ;Hamburger menu, rvs'd
-mnulayer = 3   ;Highest of 4
-
-tptr     = $50 ;Text/Temp Pointer
-lptr     = $52 ;LastSib/Line Pointer
-cptr     = $26 ;ColorLine Pointer
-
-rootpg   = $0382 ;Menu Structure Root Pg
-defpg    = $0383 ;Menu Def's Root Page
-defpgcnt = $0384 ;Menu Def's Page Count
-umdefpg  = $0385 ;Util Def's Root Page
-umdefpgc = $0386 ;Util Def's Page Count
-
-timutil  = $08cd ;17 bytes
-memutil  = $08de ;17 bytes
-
-statmode = $08ef
-
-;Status Modes
-stat_drv = 0 ;Drive Status
-stat_app = 1 ;Application Custom
-stat_fil = 2 ;Path to Open File
-
-;struct
-nextptr  = 0 ;2 bytes
-childptr = 2 ;2 bytes
-titleptr = 4 ;2 bytes
-codeptr  = 6 ;2 bytes
-entrysize = 8
-;menuentry
-
-;struct
-awidth   = 0 ;1 byte
-petvalue = 1 ;1 byte
-actcode  = 2 ;1 byte
-modkeys  = 3 ;1 byte
-actionsize = 4
-;actioncode
-
-;struct
-hwidth   = 0  ;1 byte
-hopen    = 1  ;1 byte
-headersize = 2
-;headercode
+prevapp         = $dbe8
+mnuicon         = $00f2
+mnulayer        = $0003
+tptr            = $0050
+lptr            = $0052
+cptr            = $0026
+rootpg          = $0382
+defpg           = $0383
+defpgcnt        = $0384
+umdefpg         = $0385
+umdefpgc        = $0386
+timutil         = $08cd
+memutil         = $08de
+statmode        = $08ef
+stat_drv        = $0000
+stat_app        = $0001
+stat_fil        = $0002
+nextptr         = $0000
+childptr        = $0002
+titleptr        = $0004
+codeptr         = $0006
+entrysize       = $0008
+awidth          = $0000
+petvalue        = $0001
+actcode         = $0002
+modkeys         = $0003
+actionsize      = $0004
+hwidth          = $0000
+hopen           = $0001
+headersize      = $0002

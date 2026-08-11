@@ -8,16 +8,16 @@
 strptr   = $61 ;$62
 stralt   = $63 ;$64
 
-stradd .macro ;ptr, string
+stradd   .macro ;ptr, string
          ;X -> string start index
          ;Y -> pointer start index
-         lda (\2),x
-         sta ((\1)),y
+         lda \2,x
+         sta (\1),y
          beq *+6
          iny
          inx
          bne *-9
-.endmacro
+         .endm
 
 ;Call these macros before a set
 ;of null terminated strings.
@@ -53,7 +53,7 @@ found    #rdxy search+1
 index    .byte 0
 
 strings
-.endmacro
+         .endm
 
 straxget .macro         ;52-Byte Routine
          ;A   -> String Number
@@ -94,6 +94,6 @@ found    lda search+1
 index    .byte 0
 
 strings
-.endmacro
+         .endm
 
 printstr = $ab1e      ;In the BASIC ROM

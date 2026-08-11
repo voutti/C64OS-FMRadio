@@ -1,6 +1,6 @@
 ;----[ drawbox.s ]----------------------
 
-drawbox .macro
+drawbox  .macro
 xa       = 0
 ya       = 1
 xb       = 2
@@ -108,4 +108,4 @@ incrow   ;Increment Draw Row
          rts
 
 par      ;Parameters (6 bytes)
-.endmacro
+         .endm

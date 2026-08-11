@@ -1,5 +1,7 @@
 ;----[ cnp.t for cnp.lib.r ]------------
 
+;Commodore Network Protocol library
+
 ;link_   = $00
 ;  Initializes cnp.lib
 
@@ -14,6 +16,9 @@ sessbgn_ = $09
 ;  of an open socket. Send auth.
 ;  Assigns itself as nhd data handler.
 ;  RegPtr -> CNP Auth Struct
+;  C <- Set on Error
+;    A <- 0 = ns_cpup already set
+;    A <- 1 = No Carrier
 
 sessend_ = $0c
 ;  End CNP server session
@@ -26,15 +31,18 @@ sessend_ = $0c
 opencnps_ = $0f
 ;  Open CNP Socket
 ;  RegPtr -> CNP Socket Struct
+;  C <- Set = No free socket slot
 
 closcnps_ = $12
 ;  Close CNP Socket
 ;  RegPtr -> CNP Socket Struct
+;  C <- Clr = close packet sent
 
 cnpsout_ = $15
 ;  Prepare CNP Socket for output
 ;  Equiv. of chkout in KERNAL ROM
 ;  RegPtr -> CNP Socket Struct
+;  Raises exceptions.
 
 cnpsput_ = $18
 ;  Output a byte to CNP Socket
@@ -42,6 +50,7 @@ cnpsput_ = $18
 ;  A -> byte to send
 ;  C <- Set = can take more data
 ;  C <- Clr = current packet full
+;  Raises exceptions.
 
 cnpsclr_ = $1b
 ;  Clear to send packet.
@@ -49,6 +58,7 @@ cnpsclr_ = $1b
 ;  data will be written at this time.
 ;  Whatever is in the current packet can
 ;  be sent immediately.
+;  Raises exceptions.
 
 cnpsin_  = $1e
 ;  Prepare CNP Socket for input

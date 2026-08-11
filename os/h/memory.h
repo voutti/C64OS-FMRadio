@@ -10,6 +10,7 @@ pgalloc_        = $0015
 reuconf_        = $0018
 pgfetch_        = $001b
 pgstash_        = $001e
+freetemp_       = $0021
 realloc_        = $0003
 bkfree_         = $0006
 bkalloc_        = $0009

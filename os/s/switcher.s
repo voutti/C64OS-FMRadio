@@ -12,5 +12,5 @@ fas_name        = $0000
 fas_stat        = $0011
 fss_safe        = $0000
 fss_usaf        = $0001
-opnfrefreu      = $2000
+opnmptrreu      = $2000
 rtcdrvrreu      = $2100

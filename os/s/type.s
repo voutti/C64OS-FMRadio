@@ -30,6 +30,7 @@ ct_float = 1
 ct_base64 = 2
 ct_gzip  = 3
 ct_uuenc = 4
+ct_bin   = 5
 
 ct_audio = 2
 

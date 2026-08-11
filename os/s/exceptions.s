@@ -12,22 +12,22 @@ excindex = $c7     ;Exceptions Tab Index
 
 excaddr  = $0e;$0f ;Exception Address
 
-try .macro ;catch
+try      .macro ;catch
          jsr backregs
-         lda #<(\1)
-         ldx #>(\1)
+         lda #<\1
+         ldx #>\1
          jsr try_
-.endmacro                 ;10 bytes
+         .endm                 ;10 bytes
 
 ;Use exittry if there is no catch block.
 
-exittry .macro
+exittry  .macro
          dec excindex           ;2 bytes
-.endmacro
+         .endm
 
 ;Use endtry to skip the catch block.
 
-endtry .macro ;endcatch
+endtry   .macro ;endcatch
          #exittry
-         jmp (\1)
-.endmacro                  ;5 bytes
+         jmp \1
+         .endm                  ;5 bytes

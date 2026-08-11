@@ -50,3 +50,6 @@ libinfo         = $08b6
 liblocs         = $08c0
 slnoinit        = $0080
 slunload        = $0080
+auliblo         = $00d3
+aulibhi         = $00d4
+aulibinf        = $00d5

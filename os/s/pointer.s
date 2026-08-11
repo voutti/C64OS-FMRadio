@@ -1,34 +1,34 @@
 ;----[ pointer.s ]----------------------
 
-rdxy .macro ;Reads Ptr into X/Y
-         ldx (\1)
-         ldy (\1)+1
-.endmacro
+rdxy     .macro ;Reads Ptr into X/Y
+         ldx \1
+         ldy \1+1
+         .endm
 
-ldxy .macro ;Loads X/Y with address
-         ldx #<(\1)
-         ldy #>(\1)
-.endmacro
+ldxy     .macro ;Loads X/Y with address
+         ldx #<\1
+         ldy #>\1
+         .endm
 
-stxy .macro
-         stx (\1)
-         sty (\1)+1
-.endmacro
+stxy     .macro
+         stx \1
+         sty \1+1
+         .endm
 
 ;---------------------------------------
 ;Get and Set RegPtr from Store
 
 storeset .macro ;store,index
-         stx (\1)+((\2)*2)
-         sty (\1)+((\2)*2)+1
-.endmacro
+         stx \1+(\2*2)
+         sty \1+(\2*2)+1
+         .endm
 
 storeget .macro ;store,index
-         ldx (\1)+((\2)*2)
-         ldy (\1)+((\2)*2)+1
-.endmacro
+         ldx \1+(\2*2)
+         ldy \1+(\2*2)+1
+         .endm
 
-storewt .macro ;store
+storewt  .macro ;store
          ;A      -> index to write to
          ;RegPtr -> pointer to store
          sty hibyte+1
@@ -36,169 +36,169 @@ storewt .macro ;store
          tay
 
          txa
-         sta (\1),y
+         sta \1,y
 hibyte   lda #$ff
-         sta (\1)+1,y
-.endmacro
+         sta \1+1,y
+         .endm
 
-storerd .macro ;store
+storerd  .macro ;store
          ;A      -> index to read from
          ;RegPtr <- pointer from store
          asl a ;x2
          tay
 
-         lda (\1),y
+         lda \1,y
          tax
-         lda (\1)+1,y
+         lda \1+1,y
          tay
-.endmacro
+         .endm
 
 ;---------------------------------------
 ;Toolkit Helpers
 
 classmethod .macro ;method_offset
          jsr setclass_+stkt
-         ldy #(\1)
+         ldy #\1
          jsr getmethod_+stkt
-.endmacro
+         .endm
 
 supermethod .macro ;method_offset
          jsr setsuper_+stkt
-         ldy #(\1)
+         ldy #\1
          jsr getmethod_+stkt
-.endmacro
+         .endm
 
 ;---------------------------------------
 ;Flag Manipulation
 
-setflag .macro ;ptr,index,flags
-         ldy #(\2)
-         lda ((\1)),y
-         ora #(\3)
-         sta ((\1)),y
-.endmacro
+setflag  .macro ;ptr,index,flags
+         ldy #\2
+         lda (\1),y
+         ora #\3
+         sta (\1),y
+         .endm
 
-clrflag .macro ;ptr,index,flags
-         ldy #(\2)
-         lda ((\1)),y
-         and #(\3)^$ff
-         sta ((\1)),y
-.endmacro
+clrflag  .macro ;ptr,index,flags
+         ldy #\2
+         lda (\1),y
+         and #\3:$ff
+         sta (\1),y
+         .endm
 
-togflag .macro ;ptr,index,flags
-         ldy #(\2)
-         lda ((\1)),y
-         eor #(\3)
-         sta ((\1)),y
-.endmacro
+togflag  .macro ;ptr,index,flags
+         ldy #\2
+         lda (\1),y
+         eor #\3
+         sta (\1),y
+         .endm
 
 ;---------------------------------------
 ;Setters and Getters
 
-setobj8 .macro ;ptr,offset,int8
-         ldy #(\2)
-         lda #(\3)
-         sta ((\1)),y
-.endmacro
+setobj8  .macro ;ptr,offset,int8
+         ldy #\2
+         lda #\3
+         sta (\1),y
+         .endm
 
 setobj16 .macro ;ptr,offset,int16
-         ldy #(\2)
-         lda #<(\3)
-         sta ((\1)),y
+         ldy #\2
+         lda #<\3
+         sta (\1),y
          iny
-         lda #>(\3)
-         sta ((\1)),y
-.endmacro
+         lda #>\3
+         sta (\1),y
+         .endm
 
 setobjptr .macro ;ptr,offset,ptr
-         ldy #(\2)
-         lda (\3)
-         sta ((\1)),y
+         ldy #\2
+         lda \3
+         sta (\1),y
          iny
-         lda (\3)+1
-         sta ((\1)),y
-.endmacro
+         lda \3+1
+         sta (\1),y
+         .endm
 
 setobjxy .macro ;ptr,offset,(RegWrd)
          tya
-         ldy #(\2)+1
-         sta ((\1)),y
+         ldy #\2+1
+         sta (\1),y
          dey
          txa
-         sta ((\1)),y
-.endmacro
+         sta (\1),y
+         .endm
 
-rdobj16 .macro ;ptr,offset
+rdobj16  .macro ;ptr,offset
          ;RegPtr <- property
-         ldy #(\2)
-         lda ((\1)),y
+         ldy #\2
+         lda (\1),y
          tax
          iny
-         lda ((\1)),y
+         lda (\1),y
          tay
-.endmacro
+         .endm
 
 getobj16 .macro ;ptr,offset,to
          ;A <- property hi byte
-         ldy #(\2)+1  ;offset hi byte
-         lda ((\1)),y
+         ldy #\2+1  ;offset hi byte
+         lda (\1),y
          pha
          dey        ;offset lo byte
-         lda ((\1)),y
-         sta (\3)     ;Save lo byte
+         lda (\1),y
+         sta \3     ;Save lo byte
          pla
-         sta (\3)+1   ;Save hi byte
-.endmacro
+         sta \3+1   ;Save hi byte
+         .endm
 
 ;---------------------------------------
 
-pushxy .macro
+pushxy   .macro
          tya ;Hi
          pha
          txa ;Lo
          pha
-.endmacro
+         .endm
 
-pullxy .macro
+pullxy   .macro
          pla
          tax ;Lo
          pla
          tay ;Hi
-.endmacro
+         .endm
 
-push16 .macro ;word to put on stack
-         lda #>(\1) ;Hi
+push16   .macro ;word to put on stack
+         lda #>\1 ;Hi
          pha
-         lda #<(\1) ;Lo
+         lda #<\1 ;Lo
          pha
-.endmacro
+         .endm
 
-pushptr .macro ;ptr to put on stack
-         lda (\1)+1 ;Hi
+pushptr  .macro ;ptr to put on stack
+         lda \1+1 ;Hi
          pha
-         lda (\1)   ;Lo
+         lda \1   ;Lo
          pha
-.endmacro
+         .endm
 
-pull16 .macro ;ptr to pull from stack
+pull16   .macro ;ptr to pull from stack
          pla
-         sta (\1)   ;Lo
+         sta \1   ;Lo
          pla
-         sta (\1)+1 ;Hi
-.endmacro
+         sta \1+1 ;Hi
+         .endm
 
 ;---------------------------------------
 
-copy16 .macro ;word,dest
-         lda #<(\1)
-         sta (\2)   ;1st: lo byte
-         lda #>(\1)
-         sta (\2)+1 ;2nd: hi byte
-.endmacro
+copy16   .macro ;word,dest
+         lda #<\1
+         sta \2   ;1st: lo byte
+         lda #>\1
+         sta \2+1 ;2nd: hi byte
+         .endm
 
-copyptr .macro ;ptr,dest
-         lda (\1)
-         sta (\2)   ;1st: lo byte
-         lda (\1)+1
-         sta (\2)+1 ;2nd: hi byte
-.endmacro
+copyptr  .macro ;ptr,dest
+         lda \1
+         sta \2   ;1st: lo byte
+         lda \1+1
+         sta \2+1 ;2nd: hi byte
+         .endm

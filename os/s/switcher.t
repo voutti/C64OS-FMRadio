@@ -78,13 +78,14 @@ fss_safe = $00 ;Saved and quittable
 fss_usaf = $01 ;Unsaved content!
 
 
-;Open File Reference placeholder
+;Open File Reference or Memory Page
 
-opnfrefreu = $2000 ;-> $20ff (1 Page)
+opnmptrreu = $2000 ;-> $20ff (1 Page)
 
 ;Switcher passes an open file reference
+;or page pointed to be a mc_mptr message
 ;between banks by first copying it to
-;the REU workbank at opnfrefreu.
+;the REU workbank at opnmptrreu.
 
 ;RTC Driver Cache
 

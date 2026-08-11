@@ -61,6 +61,9 @@ pgstash_ = $1e
 ;  C      <- Set on failure to stash
 ;  C      <- Clr on successful stash
 
+freetemp_ = $21
+;  Mark all pages allocated as maptemp
+;  as mapfree. Affects A, X and Y.
 
 ;---------------------------------------
 ;memory.lib routines (not in KERNAL)

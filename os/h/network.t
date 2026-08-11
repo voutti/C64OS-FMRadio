@@ -1,5 +1,21 @@
 ;----[ network.t for network.lib.r ]----
 
+;Network Control Library
+;-----------------------
+;
+;- Loads cnp.lib (C= Network Protocol)
+;- Loads driver settings
+;- Loads nhd.* driver
+;- Configs network.lib as command
+;  mode data handler for driver.
+;
+;- Tells driver how to adjust baud rate
+;- Tells driver which wifi to join
+;- Tells driver to open a socket to
+;  CNP server.
+;- Passes online mode data handling to
+;  cnp.lib, with auth credentials.
+
 ;link_   = $00
 ;  Initializes network.lib
 ;  Loads cnp.lib
@@ -36,17 +52,19 @@ confbaud_ = $0f
 ;
 ;  C <- Set on error
 ;  A <- Error code
+;    0 = Carrier Detected
+;    1 = Baud Match Test Failed
 ;
 ;  Driver settings must be populated.
 ;  Either by: loadset or Network Utility
 
 joinwifi_ = $12
 ;  Join or Read Wifi Hotspot
+;  RegPtr -> Next stage callback
 ;  C -> Clr = Read SSID
 ;  C <- Always clear
 ;
 ;  C -> Set = Join Hotspot
-;  RegPtr -> Success callback
 ;  C <- Set on error
 ;    A <- 0 = Carrier Detect
 ;    A <- 1 = Not Configured
@@ -61,10 +79,9 @@ joinwifi_ = $12
 
 cnpsrvr_ = $15
 ;  Join/Part CNP server
+;  RegPtr -> Next stage callback
 ;  C -> Set = Part from CNP Server
-;
 ;  C -> Clr = Join CNP Server
-;  RegPtr -> Success callback
 ;  C <- Set on error
 ;    A <- 0 = Carrier Detect
 ;    A <- 1 = Not Configured

@@ -106,3 +106,9 @@ slnoinit = %10000000 ;Skip Auto Init
 
 ;unldlib:
 slunload = %10000000 ;Make Unload Call
+
+;Auto unload library
+
+auliblo  = $d3
+aulibhi  = $d4
+aulibinf = $d5
