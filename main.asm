@@ -18,6 +18,7 @@
         #inc_s "service"
         #inc_s "toolkit"
         #inc_s "memory"
+        #inc_s "timers"
 
         #inc_tks "tksizes"
         #inc_tks "tkview"
@@ -47,6 +48,7 @@ rd_chan  = $03
 rd_iocfg = $04
 rd_vol   = $05
 rd_seek  = $0a     ;seek/RDS status reg
+rd_stat  = $0b     ;RSSI/status reg (RSSI in bits15:9)
 m_dhiz   = $80
 m_dmute  = $40
 m_mono   = $20
@@ -69,6 +71,9 @@ c_off    = cdgrey  ;toggle button off colour
 
 ;--- debug ---
 DEBUG    = 1       ;1 = log each i2c register write in the status label; set 0 to remove
+
+;custom async message code (timer trigger -> msgcmd)
+mc_rssi  = $80
 
 ;--- widget store indices ---
 w_freq = 0
@@ -139,6 +144,7 @@ st_mute  .byte 0       ;mute 0/1
 st_deem  .byte 0       ;0=50us 1=75us
 st_vol   .byte $0a     ;volume 0..15
 st_freq  .word 1000    ;100kHz units -> 100.0 MHz
+st_rssi  .byte 0       ;last RSSI 0..127
 
 ;--- widget pointer store (w_* indices) ---
 widgets  .word 0,0,0,0,0,0,0,0
@@ -169,10 +175,27 @@ rtry     .byte 0
 gfhi     .byte 0
 gflo     .byte 0
 swto     .byte 0
+blev     .byte 0
+bidx     .byte 0
+bofs     .byte 0
+bcol     .byte 0
+btmp     .byte 0
+rssireq  .byte 0       ;set by timer, serviced in l_update
+tstcnt   .byte 0       ;TEMP timer-tick counter
 freqstr  .byte 0,0,0,0,0,0,0,0,0,0,0,0
 .if DEBUG
 dbgstr   .fill 20,0
 .endif
+
+;bar cell label pointers: [0..7]=volume, [8..15]=rssi (bottom..top)
+barcells .word 0,0,0,0,0,0,0,0
+         .word 0,0,0,0,0,0,0,0
+
+;~2-second RSSI poll timer struct
+tmr      .byte 0,0,0              ;ttime countdown
+         .byte (tintrvl|tcancel)  ;tstat: interval + initial reset
+         .word tmrtick            ;ttrig
+         .byte 120,0,0            ;tvalu reset (~2s @ 60Hz)
 
 ;--- strings ---
 msg_probe .null "Probing RDA5807..."
@@ -198,6 +221,10 @@ s_fmup   .null "++"
 s_fmdn   .null "--"
 s_fkup   .null "+"
 s_fkdn   .null "-"
+s_bar3   .null "   "
+s_lvol   .null "Vol"
+s_lrss   .null "Rss"
+tststr   .null "RSSI 00"
 
 ;---------------------------------------
 
@@ -232,7 +259,7 @@ nordf
 
         ; Allocate memory for tk widgets
         lda #mapapp
-        ldx #6 ;UI object pool (~15 objects)
+        ldx #8 ;UI object pool (~33 objects)
         jsr pgalloc
         sty tkenv+te_mpool
 
@@ -266,6 +293,10 @@ nordf
         jsr applyall
 nopwr
 
+        ;Start the ~2s RSSI poll timer
+        #ldxy tmr
+        jsr timeque
+
         ;Push main screen layer
 
         #ldxy layer
@@ -280,6 +311,10 @@ nopwr
 willquit
         .block
         ;Deallocate resources here.
+
+        ;Cancel the RSSI poll timer
+        lda #tcancel
+        sta tmr+tstat
 
         ;Unload Shared Libraries
         ldx #"i"          ;i2c.lib.r (id byte $49)
@@ -354,11 +389,13 @@ msgcmd   ;A -> Msg Command
         ;message types must be handled
         ;to support menu actions.
 
-        #switch 3
+        #switch 4
         .byte mc_col
         .byte mc_menq,mc_mnu
+        .byte mc_rssi
         .rta setcolr
         .rta mnuenq,mnucmd
+        .rta dorssi
 
 done     sec            ;Msg Not Handled
         rts
@@ -370,6 +407,15 @@ setcolr  ;X -> Color Code
         jsr markredraw
 
         clc            ;Msg Was Handled
+        rts
+
+dorssi   ;timer asked for an RSSI refresh (app ctx)
+        jsr r_rssi
+        lda #1
+        sta rssireq
+        ldx layer+slindx
+        jsr markredraw
+        clc
         rts
 
 mnuenq   ;X -> Menu Action Code
@@ -430,7 +476,20 @@ done    rts
 l_update
         .block
 
+        ;Service a timer-requested RSSI refresh here,
+        ;in the draw phase (safe for I2C + Toolkit).
+        lda rssireq
+        beq draw
+        lda #0
+        sta rssireq
         #ldxy tkenv
+        jsr settkenv
+        jsr updbars       ;refresh bars from st_vol / st_rssi
+        lda tkenv+te_flags
+        ora #tf_dirty
+        sta tkenv+te_flags
+
+draw    #ldxy tkenv
         jsr tkupdate
 
         ldy tkenv+te_posy
@@ -825,6 +884,23 @@ sh      lsr gfhi
 fail    rts
         .bend
 
+;Read RSSI (0..127) from status reg 0x0b.
+r_rssi
+        .block
+        #ldxy i2cbuf
+        lda #2
+        jsr i2cpreprw
+        lda #radioadr
+        ldy #rd_stat
+        clc
+        jsr i2creadrg
+        bne fail          ;no ack -> keep previous
+        lda i2cbuf        ;bits15:8; RSSI in bits15:9
+        lsr               ;-> RSSI[6:0]
+        sta st_rssi
+fail    rts
+        .bend
+
 ;Poll the seek/tune-complete bit (with timeout).
 ;Delay before each read so a stale STC from a
 ;previous seek isn't mistaken for this one.
@@ -981,6 +1057,7 @@ e0      ldx #w_deem
         #copy16 freqstr,mktp
         ldx #w_freq
         jsr slabel
+        jsr updbars
         rts
         .bend
 
@@ -1022,6 +1099,112 @@ slabel
         ldx mktp+1
         jsr sysjmp
         #setflag this,dflags,df_dirty
+        rts
+        .bend
+
+;TEMP: format A as 2 hex digits into tststr+5,+6.
+tsthex
+        .block
+        pha
+        lsr
+        lsr
+        lsr
+        lsr
+        jsr nib
+        sta tststr+5
+        pla
+        and #$0f
+        jsr nib
+        sta tststr+6
+        rts
+nib     cmp #10
+        bcc dig
+        clc
+        adc #("A"-10)
+        rts
+dig     ora #"0"
+        rts
+        .bend
+
+;Update both level bars from st_vol / st_rssi.
+updbars
+        .block
+        lda st_vol
+        clc
+        adc #1
+        lsr               ;(vol+1)/2 -> 0..8
+        ldx #0
+        jsr setbar
+        lda st_rssi
+        lsr
+        lsr
+        lsr               ;rssi>>3 -> 0..15
+        cmp #9
+        bcc ok
+        lda #8            ;clamp to full
+ok      ldx #8
+        jmp setbar
+        .bend
+
+;Set a bar's cells. A=level 0..8, X=start index
+;(0=volume, 8=rssi) into barcells.
+setbar
+        .block
+        sta blev
+        txa
+        asl
+        sta bofs
+        lda #0
+        sta bidx
+sc      lda bidx
+        cmp blev          ;C clear if bidx<blev
+        lda #f_rev
+        bcc on            ;on: reverse-video (solid)
+        lda #0            ;off: normal (blank)
+on      sta btmp
+        lda bidx
+        asl
+        clc
+        adc bofs
+        tay
+        lda barcells,y
+        sta stmp
+        iny
+        lda barcells,y
+        sta stmp+1
+        #rdxy stmp
+        jsr ptrthis
+        lda btmp
+        ldy #strflgs
+        sta (this),y
+        #setflag this,dflags,df_dirty
+        inc bidx
+        lda bidx
+        cmp #8
+        bcc sc
+        rts
+        .bend
+
+;Timer trigger: post an async app message so the
+;I2C read happens in msgcmd (normal app context);
+;calling the I2C library from here corrupts things.
+tmrtick
+        .block
+        pha
+        txa
+        pha
+        tya
+        pha
+        lda #mc_rssi
+        ldx #0
+        ldy #0
+        clc               ;deliver without delay
+        jsr msgapp
+        pla
+        tay
+        pla
+        tax
+        pla
         rts
         .bend
 
@@ -1108,6 +1291,42 @@ mklbl
         rts
         .bend
 
+;Create an 8-cell vertical bar of 1x3 labels.
+;A=start index into barcells (0 or 8), X=column.
+mkbar
+        .block
+        stx bcol
+        asl               ;start*2 = byte offset base
+        sta bofs
+        lda #0
+        sta bidx
+nc      #copy16 s_bar3,mktp
+        lda #0
+        sta mkflg
+        lda #3
+        sta mkw
+        lda #16
+        sec
+        sbc bidx          ;offtop = 16 - idx (bottom=row 16)
+        ldx bcol
+        jsr mklbl
+        lda bidx
+        asl
+        clc
+        adc bofs
+        tay
+        lda mkobj
+        sta barcells,y
+        lda mkobj+1
+        iny
+        sta barcells,y
+        inc bidx
+        lda bidx
+        cmp #8
+        bcc nc
+        rts
+        .bend
+
 ;Build the whole radio UI.
 buildui
         .block
@@ -1128,7 +1347,7 @@ buildui
         sta mkw
         lda #0
         sta mkflg
-        lda #13
+        lda #18
         ldx #2
         jsr mklbl
         #storeset widgets,w_stat
@@ -1241,6 +1460,29 @@ buildui
         ldx #33
         jsr mkbtn
         #storeset widgets,w_fku
+        ;level bars (volume, rssi) + markers
+        lda #0
+        ldx #24
+        jsr mkbar
+        lda #8
+        ldx #30
+        jsr mkbar
+        #copy16 s_lvol,mktp
+        lda #3
+        sta mkw
+        lda #0
+        sta mkflg
+        lda #17
+        ldx #24
+        jsr mklbl
+        #copy16 s_lrss,mktp
+        lda #3
+        sta mkw
+        lda #0
+        sta mkflg
+        lda #17
+        ldx #30
+        jsr mklbl
         rts
         .bend
 
@@ -1314,6 +1556,7 @@ a_volu
         bcs done
         inc st_vol
 done    jsr r_vol
+        jsr updui
         jmp cbend
         .bend
 
@@ -1324,6 +1567,7 @@ a_vold
         beq done
         dec st_vol
 done    jsr r_vol
+        jsr updui
         jmp cbend
         .bend
 
@@ -1455,6 +1699,10 @@ ctx2scr     #syscall lscr,ctx2scr_
 quitapp     #syscall lser,quitapp_
 loadlib     #syscall lser,loadlib_
 unldlib     #syscall lser,unldlib_
+
+         #inc_h "timers"
+timeque     #syscall ltim,timeque_
+msgapp      #syscall ltim,msgapp_
 
          #inc_h "toolkit"
 setctx      #syscall ltkt,setctx_
