@@ -180,14 +180,16 @@ bidx     .byte 0
 bofs     .byte 0
 bcol     .byte 0
 btmp     .byte 0
+brow     .byte 0
 rssireq  .byte 0       ;set by timer, serviced in l_update
 freqstr  .byte 0,0,0,0,0,0,0,0,0,0,0,0
 .if DEBUG
 dbgstr   .fill 20,0
 .endif
 
-;bar cell label pointers: [0..2]=volume, [3..5]=rssi (bottom..top)
-barcells .word 0,0,0,0,0,0
+;bar cell label pointers: [0..7]=volume, [8..15]=rssi
+barcells .word 0,0,0,0,0,0,0,0
+         .word 0,0,0,0,0,0,0,0
 
 ;~2-second RSSI poll timer struct
 tmr      .byte 0,0,0              ;ttime countdown
@@ -221,21 +223,7 @@ s_fkup   .null "+"
 s_fkdn   .null "-"
 s_lvol   .null "Vol"
 s_lrss   .null "Rss"
-
-;--- level-bar glyphs (PETSCII bottom-fill, 1/8 steps) ---
-;fill 8 (full) is a reverse-video space.
-g_sp  .byte $20,$20,$20,0
-g_1   .byte $e4,$e4,$e4,0
-g_2   .byte $ef,$ef,$ef,0
-g_3   .byte $f9,$f9,$f9,0
-g_4   .byte $e2,$e2,$e2,0
-g_5   .byte $f8,$f8,$f8,0
-g_6   .byte $f7,$f7,$f7,0
-g_7   .byte $e3,$e3,$e3,0
-glyphlo  .byte <g_sp,<g_1,<g_2,<g_3,<g_4,<g_5,<g_6,<g_7,<g_sp
-glyphhi  .byte >g_sp,>g_1,>g_2,>g_3,>g_4,>g_5,>g_6,>g_7,>g_sp
-glyphrev .byte 0,0,0,0,0,0,0,0,f_rev
-voltab   .byte 0,2,3,5,6,8,10,11,13,14,16,18,19,21,22,24
+s_cell   .byte $20,0        ;1-char bar cell (reversed = solid block)
 
 ;---------------------------------------
 
@@ -1113,34 +1101,29 @@ slabel
         rts
         .bend
 
-;Update both level bars from st_vol / st_rssi.
-;Level 0..24 = 3 cells x 8 pixel rows.
+;Update both level bars from st_vol / st_rssi (0..8).
 updbars
         .block
-        ldx st_vol
-        lda voltab,x       ;volume 0..15 -> 0..24
+        lda st_vol
+        clc
+        adc #1
+        lsr                ;(vol+1)/2 -> 0..8
         ldx #0
         jsr setbar
         lda st_rssi
         lsr
         lsr
-        sta btmp           ;rssi>>2
-        lda st_rssi
-        lsr
-        lsr
-        lsr                ;rssi>>3
-        clc
-        adc btmp           ;rssi*3/8
-        cmp #25
+        lsr                ;rssi>>3 -> 0..15
+        cmp #9
         bcc rok
-        lda #24            ;clamp to full
-rok     ldx #3
+        lda #8             ;clamp to full
+rok     ldx #8
         jmp setbar
         .bend
 
-;Set a bar's 3 cells. A=level 0..24, X=start index
-;(0=volume, 3=rssi) into barcells. Each cell draws a
-;1/8-row fill glyph (fills 5..8 are reverse-video).
+;Set a bar's 8 cells. A=level 0..8, X=start index
+;(0=volume, 8=rssi) into barcells. Filled cells draw
+;reverse-video (solid block); empty cells draw space.
 setbar
         .block
         sta blev
@@ -1150,20 +1133,11 @@ setbar
         lda #0
         sta bidx
 sc      lda bidx
-        asl
-        asl
-        asl               ;bidx*8
-        sta btmp
-        lda blev
-        sec
-        sbc btmp          ;fill = level - bidx*8
-        bcs pos
-        lda #0            ;below -> empty
-        beq clamp
-pos     cmp #9
-        bcc clamp
-        lda #8            ;above -> full
-clamp   sta btmp          ;fill 0..8
+        cmp blev          ;C clear if bidx<blev -> on
+        lda #f_rev
+        bcc on
+        lda #0
+on      sta btmp
         lda bidx
         asl
         clc
@@ -1176,22 +1150,13 @@ clamp   sta btmp          ;fill 0..8
         sta stmp+1
         #rdxy stmp
         jsr ptrthis
-        ldy #setstrp_
-        jsr getmethod
-        ldx btmp
-        lda glyphhi,x
-        sta gfhi          ;stage hi byte (ldx abs,x invalid)
-        lda glyphlo,x
-        ldx gfhi
-        jsr sysjmp
-        ldx btmp
-        lda glyphrev,x
+        lda btmp
         ldy #strflgs
         sta (this),y
         #setflag this,dflags,df_dirty
         inc bidx
         lda bidx
-        cmp #3
+        cmp #8
         bcc sc
         rts
         .bend
@@ -1302,8 +1267,8 @@ mklbl
         rts
         .bend
 
-;Create a 3-cell vertical bar of 1x3 labels.
-;A=start index into barcells (0 or 3), X=column.
+;Create an 8-cell horizontal bar of 1-wide labels.
+;A=start index (0 or 8), X=start column, brow=row.
 mkbar
         .block
         stx bcol
@@ -1311,15 +1276,16 @@ mkbar
         sta bofs
         lda #0
         sta bidx
-nc      #copy16 g_sp,mktp
+nc      #copy16 s_cell,mktp
         lda #0
         sta mkflg
-        lda #3
+        lda #1
         sta mkw
-        lda #11
-        sec
-        sbc bidx          ;offtop = 11 - idx (bottom=row 11)
-        ldx bcol
+        lda bcol
+        clc
+        adc bidx          ;column = bcol + idx
+        tax
+        lda brow          ;offtop = row
         jsr mklbl
         lda bidx
         asl
@@ -1333,7 +1299,7 @@ nc      #copy16 g_sp,mktp
         sta barcells,y
         inc bidx
         lda bidx
-        cmp #3
+        cmp #8
         bcc nc
         rts
         .bend
@@ -1471,29 +1437,33 @@ buildui
         ldx #33
         jsr mkbtn
         #storeset widgets,w_fku
-        ;level bars (volume, rssi) + markers
-        lda #0
-        ldx #24
-        jsr mkbar
-        lda #3
-        ldx #30
-        jsr mkbar
+        ;horizontal level bars: "Vol"/"Rss" + 8 cells
         #copy16 s_lvol,mktp
         lda #3
         sta mkw
         lda #0
         sta mkflg
-        lda #12
-        ldx #24
+        lda #9
+        ldx #21
         jsr mklbl
+        lda #9
+        sta brow
+        lda #0
+        ldx #25
+        jsr mkbar
         #copy16 s_lrss,mktp
         lda #3
         sta mkw
         lda #0
         sta mkflg
-        lda #12
-        ldx #30
+        lda #10
+        ldx #21
         jsr mklbl
+        lda #10
+        sta brow
+        lda #8
+        ldx #25
+        jsr mkbar
         rts
         .bend
 
