@@ -61,9 +61,12 @@ m_tune   = $10
 m_deemph = $08
 m_voldac = $0f
 m_stc    = $40     ;seek/tune complete (status hi byte)
+m_st     = $04     ;stereo indicator (reg 0x0A bit10, hi byte)
 m_lnap   = $c0     ;LNA antenna-port mask (reg 0x05 lo)
 lna_port = $c0     ;$80 = LNAP input (RDA5807 reset default), $40 = LNAN, $c0 = DUAL (both inputs — often best)
 vol_max  = $0f
+rssi_flr = 15      ;RSSI noise floor (bar empty at/below this)
+rssi_top = 63      ;RSSI at full bar (useful window = flr..top)
 frq_min  = 870     ;87.0 MHz (100kHz units)
 frq_max  = 1080    ;108.0 MHz
 c_on     = cgreen  ;toggle button on colour
@@ -71,6 +74,7 @@ c_off    = cdgrey  ;toggle button off colour
 
 ;--- debug ---
 DEBUG    = 1       ;1 = log each i2c register write in the status label; set 0 to remove
+log_ttl  = 10      ;log line auto-clears after this many 2s poll ticks (~20s)
 
 ;custom async message code (timer trigger -> msgcmd)
 mc_rssi  = $80
@@ -82,7 +86,7 @@ w_pwr  = 2
 w_ster = 3
 w_bass = 4
 w_mute = 5
-w_deem = 6
+w_e50  = 6
 w_volu = 7
 w_vold = 8
 w_scnu = 9
@@ -91,6 +95,8 @@ w_fmu  = 11
 w_fmd  = 12
 w_fku  = 13
 w_fkd  = 14
+w_e75  = 15
+w_stind = 16
 
 ;---------------------------------------
 ;Data Structures
@@ -145,10 +151,12 @@ st_deem  .byte 0       ;0=50us 1=75us
 st_vol   .byte $0a     ;volume 0..15
 st_freq  .word 1000    ;100kHz units -> 100.0 MHz
 st_rssi  .byte 0       ;last RSSI 0..127
+st_stind .byte 0       ;stereo indicator 0/1
 
 ;--- widget pointer store (w_* indices) ---
 widgets  .word 0,0,0,0,0,0,0,0
-         .word 0,0,0,0,0,0,0
+         .word 0,0,0,0,0,0,0,0
+         .word 0
 
 ;--- i2c buffer + scratch ---
 i2cbuf   .byte 0,0,0,0
@@ -181,15 +189,20 @@ bofs     .byte 0
 bcol     .byte 0
 btmp     .byte 0
 brow     .byte 0
+bst      .byte 0
+mkbt     .byte 0
+i2cstat  .byte 0       ;0=I2C ok, 1=comms error (shown in status label)
+logttl   .byte 0       ;log-line auto-clear countdown (2s ticks)
 rssireq  .byte 0       ;set by timer, serviced in l_update
 freqstr  .byte 0,0,0,0,0,0,0,0,0,0,0,0
+statbuf  .fill 37,0     ;status/log line, space-padded to 36
 .if DEBUG
 dbgstr   .fill 20,0
 .endif
 
-;bar cell label pointers: [0..7]=volume, [8..15]=rssi
-barcells .word 0,0,0,0,0,0,0,0
-         .word 0,0,0,0,0,0,0,0
+;bar cell label pointers: [0..14]=volume, [15..29]=rssi
+barcells .word 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+         .word 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
 ;~2-second RSSI poll timer struct
 tmr      .byte 0,0,0              ;ttime countdown
@@ -202,17 +215,17 @@ msg_probe .null "Probing RDA5807..."
 msg_noi2c .null "I2C library missing"
 msg_nordo .null "RDA5807 not found"
 msg_rdyok .null "RDA5807 detected"
+msg_i2cer .null "Failed to communicate with RDA5807"
 
-s_pwron  .null "Power On"
-s_pwrof  .null "Power Off"
+s_pwron  .text "Power "
+         .byte $ab,0
+s_pwrof  .text "Power "
+         .byte $aa,0
 s_stereo .null "Stereo"
-s_mono   .null "Mono"
-s_bason  .null "Bass On"
-s_basof  .null "Bass Off"
-s_mton   .null "Mute On"
-s_mtof   .null "Mute Off"
-s_deem50 .null "Emph 50us"
-s_deem75 .null "Emph 75us"
+s_lbass  .null "Bass Boost"
+s_lmute  .null "Mute"
+s_e50    .null "Emph 50us"
+s_e75    .null "Emph 75us"
 s_volup  .null "Vol +"
 s_voldn  .null "Vol -"
 s_scnup  .null "Scan >>"
@@ -224,6 +237,8 @@ s_fkdn   .null "-"
 s_lvol   .null "Vol"
 s_lrss   .null "Rss"
 s_cell   .byte $20,0        ;1-char bar cell (reversed = solid block)
+stindstr .text "Stereo "
+         .byte $aa,0
 
 ;---------------------------------------
 
@@ -254,11 +269,13 @@ init
         cmp #>msg_rdyok
         bne nordf
         jsr r_getfreq
+        jsr readstate
+        jsr r_stind
 nordf
 
         ; Allocate memory for tk widgets
         lda #mapapp
-        ldx #8 ;UI object pool (~33 objects)
+        ldx #12 ;UI object pool (~50 objects; 30 bar cells)
         jsr pgalloc
         sty tkenv+te_mpool
 
@@ -282,6 +299,8 @@ nordf
 
         ;Build the radio control UI
         jsr buildui
+        lda #log_ttl       ;start the log auto-clear countdown
+        sta logttl
 
         ;Reflect the state model on the widgets
         jsr updui
@@ -410,7 +429,13 @@ setcolr  ;X -> Color Code
 
 dorssi   ;timer asked for an RSSI refresh (app ctx)
         jsr r_rssi
-        lda #1
+        jsr r_stind
+        lda logttl        ;log-line auto-clear countdown
+        beq lc0
+        dec logttl
+        bne lc0
+        jsr logclr
+lc0     lda #1
         sta rssireq
         ldx layer+slindx
         jsr markredraw
@@ -484,6 +509,7 @@ l_update
         #ldxy tkenv
         jsr settkenv
         jsr updbars       ;refresh bars from st_vol / st_rssi
+        jsr updstind
         lda tkenv+te_flags
         ora #tf_dirty
         sta tkenv+te_flags
@@ -569,7 +595,7 @@ i2cupdate
         ldy updreg
         clc
         jsr i2creadrg
-        bne fail
+        bne cerr
         lda updmh
         eor #$ff
         and i2cbuf
@@ -595,7 +621,10 @@ i2cupdate
 .if DEBUG
         jsr dbgwrite
 .endif
-fail    rts
+        jsr i2cok
+        rts
+cerr    jsr i2cbad
+        rts
         .bend
 
 .if DEBUG
@@ -635,8 +664,7 @@ dbgwrite
         lda #0
         sta dbgstr,x
         #copy16 dbgstr,mktp
-        ldx #w_stat
-        jmp slabel
+        jmp setstat
         .bend
 
 ;A -> byte, X -> dbgstr index. Emits two hex
@@ -897,7 +925,96 @@ r_rssi
         lda i2cbuf        ;bits15:8; RSSI in bits15:9
         lsr               ;-> RSSI[6:0]
         sta st_rssi
+        jmp i2cok
+fail    jmp i2cbad
+        .bend
+
+;Read stereo indicator (reg 0x0A bit10) into st_stind.
+r_stind
+        .block
+        #ldxy i2cbuf
+        lda #2
+        jsr i2cpreprw
+        lda #radioadr
+        ldy #rd_seek
+        clc
+        jsr i2creadrg
+        bne fail
+        lda i2cbuf        ;hi byte; ST(bit10) -> hi bit2
+        and #m_st
+        jsr bit01
+        sta st_stind
 fail    rts
+        .bend
+
+;Read current control/config from the chip into the
+;state model so the UI reflects the actual settings.
+;reg 0x02: hi=DHIZ/DMUTE/MONO/BASS, lo=ENABLE.
+;reg 0x04: hi=DEEMPH.  reg 0x05: lo=VOLUME.
+readstate
+        .block
+        #ldxy i2cbuf
+        lda #2
+        jsr i2cpreprw
+        lda #radioadr
+        ldy #rd_ctrl
+        clc
+        jsr i2creadrg
+        bne fail
+        lda i2cbuf
+        sta gfhi          ;control hi byte
+        lda i2cbuf+1
+        sta gflo          ;control lo byte
+        lda gfhi
+        and #m_mono
+        jsr bit01
+        sta st_ster       ;MONO set -> mono
+        lda gfhi
+        and #m_bass
+        jsr bit01
+        sta st_bass
+        lda gfhi
+        and #m_dmute
+        jsr bit01
+        eor #1            ;DMUTE set = NOT muted
+        sta st_mute
+        lda gflo
+        and #m_enable
+        jsr bit01
+        sta st_pwr
+        #ldxy i2cbuf
+        lda #2
+        jsr i2cpreprw
+        lda #radioadr
+        ldy #rd_iocfg
+        clc
+        jsr i2creadrg
+        bne fail
+        lda i2cbuf
+        and #m_deemph
+        jsr bit01
+        eor #1            ;DEEMPH set = 50us -> st_deem 0
+        sta st_deem
+        #ldxy i2cbuf
+        lda #2
+        jsr i2cpreprw
+        lda #radioadr
+        ldy #rd_vol
+        clc
+        jsr i2creadrg
+        bne fail
+        lda i2cbuf+1
+        and #m_voldac
+        sta st_vol
+fail    rts
+        .bend
+
+;A=masked bits -> A=0 (clear) or 1 (any set).
+bit01
+        .block
+        beq z
+        lda #1
+z       rts
         .bend
 
 ;Poll the seek/tune-complete bit (with timeout).
@@ -1016,47 +1133,41 @@ updui
         .block
         #ldxy tkenv
         jsr settkenv
-        ;Power
+        ;Power (push button title)
         #copy16 s_pwrof,mktp
         lda st_pwr
         beq p0
         #copy16 s_pwron,mktp
 p0      ldx #w_pwr
         jsr stitle
-        ;Bass
-        #copy16 s_basof,mktp
-        lda st_bass
-        beq b0
-        #copy16 s_bason,mktp
-b0      ldx #w_bass
-        jsr stitle
-        ;Mute
-        #copy16 s_mtof,mktp
-        lda st_mute
-        beq m0
-        #copy16 s_mton,mktp
-m0      ldx #w_mute
-        jsr stitle
-        ;Stereo/Mono
-        #copy16 s_stereo,mktp
+        ;Stereo checkbox (checked = stereo)
         lda st_ster
-        beq s0
-        #copy16 s_mono,mktp
-s0      ldx #w_ster
-        jsr stitle
-        ;De-emphasis
-        #copy16 s_deem50,mktp
+        eor #1
+        ldx #w_ster
+        jsr sstate
+        ;Bass Boost checkbox
+        lda st_bass
+        ldx #w_bass
+        jsr sstate
+        ;Mute checkbox
+        lda st_mute
+        ldx #w_mute
+        jsr sstate
+        ;De-emphasis radios (50us=deem0, 75us=deem1)
         lda st_deem
-        beq e0
-        #copy16 s_deem75,mktp
-e0      ldx #w_deem
-        jsr stitle
+        eor #1
+        ldx #w_e50
+        jsr sstate
+        lda st_deem
+        ldx #w_e75
+        jsr sstate
         ;Frequency
         jsr freqfmt
         #copy16 freqstr,mktp
         ldx #w_freq
         jsr slabel
         jsr updbars
+        jsr updstind
         rts
         .bend
 
@@ -1101,28 +1212,158 @@ slabel
         rts
         .bend
 
-;Update both level bars from st_vol / st_rssi (0..8).
+;Show mktp's string on the status/log line, space-
+;padded to the full 36-wide field, so leftover
+;characters from a previous (longer) message are
+;cleared.
+setstat
+        .block
+        #rdxy mktp
+        jsr ptrthis        ;this -> source string
+        ldy #0
+cp      lda (this),y
+        beq pad
+        sta statbuf,y
+        iny
+        cpy #36
+        bcc cp
+        bcs term           ;filled 36 -> stop
+pad     lda #" "
+pl      sta statbuf,y
+        iny
+        cpy #36
+        bcc pl
+term    lda #0
+        sta statbuf,y
+        lda #log_ttl       ;restart auto-clear countdown
+        sta logttl
+        #copy16 statbuf,mktp
+        ldx #w_stat
+        jmp slabel
+        .bend
+
+;Show the I2C comms-error message in the status label,
+;once, when entering the error state (avoids flicker).
+;Safe before the UI exists (checks the w_stat pointer).
+i2cbad
+        .block
+        lda widgets+w_stat*2
+        ora widgets+w_stat*2+1
+        beq done          ;UI not built yet
+        lda i2cstat
+        bne done          ;already showing the error
+        lda #1
+        sta i2cstat
+        #copy16 msg_i2cer,mktp
+        jmp setstat
+done    rts
+        .bend
+
+;Clear the error: restore the probe message in the
+;status label, once, when comms recovers.
+i2cok
+        .block
+        lda widgets+w_stat*2
+        ora widgets+w_stat*2+1
+        beq done          ;UI not built yet
+        lda i2cstat
+        beq done          ;already ok
+        lda #0
+        sta i2cstat
+        #copyptr radiomsg,mktp
+        jmp setstat
+done    rts
+        .bend
+
+;Blank the log/status line (auto-clear timeout). Does
+;not go through setstat, so it leaves logttl at 0.
+logclr
+        .block
+        ldy #0
+        lda #" "
+sp      sta statbuf,y
+        iny
+        cpy #36
+        bcc sp
+        lda #0
+        sta statbuf,y
+        sta i2cstat        ;clear latch so a persistent error can re-show
+        #copy16 statbuf,mktp
+        ldx #w_stat
+        jmp slabel
+        .bend
+
+;Set checkbox/radio[widget X] cf_state = A (0/1),
+;then mark dirty.
+sstate
+        .block
+        sta bst
+        txa
+        asl
+        tax
+        lda widgets,x
+        sta stmp
+        lda widgets+1,x
+        sta stmp+1
+        #rdxy stmp
+        jsr ptrthis
+        ldy #cflags
+        lda (this),y
+        and #(255-cf_state)
+        ldx bst
+        beq wr
+        ora #cf_state
+wr      sta (this),y
+        #setflag this,dflags,df_dirty
+        rts
+        .bend
+
+;Show "Stereo X" ($ab=stereo, $aa=mono) under RSS bar.
+updstind
+        .block
+        lda #$aa
+        ldx st_stind
+        beq set
+        lda #$ab
+set     sta stindstr+7
+        #copy16 stindstr,mktp
+        ldx #w_stind
+        jmp slabel
+        .bend
+
+;Update both level bars from st_vol / st_rssi (0..15).
 updbars
         .block
-        lda st_vol
-        clc
-        adc #1
-        lsr                ;(vol+1)/2 -> 0..8
+        lda st_vol         ;0..15 -> full-scale bar
         ldx #0
         jsr setbar
+        ;RSSI is logarithmic (dB-like). Drop the noise
+        ;floor, then span flr..top linearly (in dB) over
+        ;the 15 cells: level = (rssi-15) * 5 / 16.
         lda st_rssi
+        sec
+        sbc #rssi_flr
+        bcc rzero          ;below floor -> empty
+        cmp #(rssi_top-rssi_flr+1)
+        bcc rin
+        lda #(rssi_top-rssi_flr) ;clamp to window top
+rin     sta updtmp
+        asl
+        asl
+        clc
+        adc updtmp         ;x5
         lsr
         lsr
-        lsr                ;rssi>>3 -> 0..15
-        cmp #9
-        bcc rok
-        lda #8             ;clamp to full
-rok     ldx #8
+        lsr
+        lsr                ;/16 -> 0..15
+        jmp rset
+rzero   lda #0
+rset    ldx #15
         jmp setbar
         .bend
 
-;Set a bar's 8 cells. A=level 0..8, X=start index
-;(0=volume, 8=rssi) into barcells. Filled cells draw
+;Set a bar's 15 cells. A=level 0..15, X=start index
+;(0=volume, 15=rssi) into barcells. Filled cells draw
 ;reverse-video (solid block); empty cells draw space.
 setbar
         .block
@@ -1156,7 +1397,7 @@ on      sta btmp
         #setflag this,dflags,df_dirty
         inc bidx
         lda bidx
-        cmp #8
+        cmp #15
         bcc sc
         rts
         .bend
@@ -1202,7 +1443,9 @@ mkbtn
         ldy #init_
         jsr getmethod
         jsr sysjmp
-        #setobj8 this,btype,bt_psh
+        lda mkbt
+        ldy #btype
+        sta (this),y
         #setobj8 this,rsmask,%00000101
         lda mktop
         ldy #offtop
@@ -1267,8 +1510,8 @@ mklbl
         rts
         .bend
 
-;Create an 8-cell horizontal bar of 1-wide labels.
-;A=start index (0 or 8), X=start column, brow=row.
+;Create a 15-cell horizontal bar of 1-wide labels.
+;A=start index (0 or 15), X=start column, brow=row.
 mkbar
         .block
         stx bcol
@@ -1287,6 +1530,21 @@ nc      #copy16 s_cell,mktp
         tax
         lda brow          ;offtop = row
         jsr mklbl
+        ;cell colour: green 0..9, yellow 10..13, red 14
+        lda #cgreen
+        ldx bidx
+        cpx #10
+        bcc ccol
+        lda #cyellow
+        cpx #14
+        bne ccol
+        lda #cred
+ccol    sta btmp
+        #rdxy mkobj
+        jsr ptrthis
+        lda btmp
+        ldy #bcolor
+        sta (this),y
         lda bidx
         asl
         clc
@@ -1299,7 +1557,7 @@ nc      #copy16 s_cell,mktp
         sta barcells,y
         inc bidx
         lda bidx
-        cmp #8
+        cmp #15
         bcc nc
         rts
         .bend
@@ -1324,19 +1582,25 @@ buildui
         sta mkw
         lda #0
         sta mkflg
-        lda #18
+        lda #23
         ldx #2
         jsr mklbl
         #storeset widgets,w_stat
         ;--- left column ---
+        ;Power (push button)
+        lda #bt_psh
+        sta mkbt
         #copy16 s_pwrof,mktp
         #copy16 a_power,mktg
-        lda #16
+        lda #9
         sta mkw
         lda #3
         ldx #2
         jsr mkbtn
         #storeset widgets,w_pwr
+        ;Stereo / Bass Boost / Mute (checkboxes)
+        lda #bt_chk
+        sta mkbt
         #copy16 s_stereo,mktp
         #copy16 a_ster,mktg
         lda #16
@@ -1345,7 +1609,7 @@ buildui
         ldx #2
         jsr mkbtn
         #storeset widgets,w_ster
-        #copy16 s_basof,mktp
+        #copy16 s_lbass,mktp
         #copy16 a_bass,mktg
         lda #16
         sta mkw
@@ -1353,7 +1617,7 @@ buildui
         ldx #2
         jsr mkbtn
         #storeset widgets,w_bass
-        #copy16 s_mtof,mktp
+        #copy16 s_lmute,mktp
         #copy16 a_mute,mktg
         lda #16
         sta mkw
@@ -1361,14 +1625,52 @@ buildui
         ldx #2
         jsr mkbtn
         #storeset widgets,w_mute
-        #copy16 s_deem50,mktp
-        #copy16 a_deem,mktg
+        ;De-emphasis (linked radio pair)
+        lda #bt_rad
+        sta mkbt
+        #copy16 s_e50,mktp
+        #copy16 a_e50,mktg
         lda #16
         sta mkw
         lda #11
         ldx #2
         jsr mkbtn
-        #storeset widgets,w_deem
+        #storeset widgets,w_e50
+        #copy16 s_e75,mktp
+        #copy16 a_e75,mktg
+        lda #16
+        sta mkw
+        lda #12
+        ldx #2
+        jsr mkbtn
+        #storeset widgets,w_e75
+        ;link radio pair: e50<->e75 via bnext loop
+        lda widgets+w_e50*2
+        sta stmp
+        lda widgets+w_e50*2+1
+        sta stmp+1
+        #rdxy stmp
+        jsr ptrthis
+        ldy #bnext
+        lda widgets+w_e75*2
+        sta (this),y
+        iny
+        lda widgets+w_e75*2+1
+        sta (this),y
+        lda widgets+w_e75*2
+        sta stmp
+        lda widgets+w_e75*2+1
+        sta stmp+1
+        #rdxy stmp
+        jsr ptrthis
+        ldy #bnext
+        lda widgets+w_e50*2
+        sta (this),y
+        iny
+        lda widgets+w_e50*2+1
+        sta (this),y
+        lda #bt_psh
+        sta mkbt
         ;--- right column ---
         ;volume (- then +)
         #copy16 s_voldn,mktp
@@ -1376,7 +1678,7 @@ buildui
         lda #8
         sta mkw
         lda #3
-        ldx #21
+        ldx #18
         jsr mkbtn
         #storeset widgets,w_vold
         #copy16 s_volup,mktp
@@ -1384,7 +1686,7 @@ buildui
         lda #8
         sta mkw
         lda #3
-        ldx #29
+        ldx #27
         jsr mkbtn
         #storeset widgets,w_volu
         ;scan (<< then >>)
@@ -1393,7 +1695,7 @@ buildui
         lda #8
         sta mkw
         lda #5
-        ldx #21
+        ldx #18
         jsr mkbtn
         #storeset widgets,w_scnd
         #copy16 s_scnup,mktp
@@ -1401,7 +1703,7 @@ buildui
         lda #8
         sta mkw
         lda #5
-        ldx #29
+        ldx #27
         jsr mkbtn
         #storeset widgets,w_scnu
         ;frequency (-- - ++ +)
@@ -1410,15 +1712,15 @@ buildui
         lda #4
         sta mkw
         lda #7
-        ldx #21
+        ldx #18
         jsr mkbtn
         #storeset widgets,w_fmd
         #copy16 s_fkdn,mktp
         #copy16 a_fkd,mktg
-        lda #4
+        lda #3
         sta mkw
         lda #7
-        ldx #29
+        ldx #28
         jsr mkbtn
         #storeset widgets,w_fkd
         #copy16 s_fmup,mktp
@@ -1426,30 +1728,30 @@ buildui
         lda #4
         sta mkw
         lda #7
-        ldx #25
+        ldx #23
         jsr mkbtn
         #storeset widgets,w_fmu
         #copy16 s_fkup,mktp
         #copy16 a_fku,mktg
-        lda #4
+        lda #3
         sta mkw
         lda #7
-        ldx #33
+        ldx #32
         jsr mkbtn
         #storeset widgets,w_fku
-        ;horizontal level bars: "Vol"/"Rss" + 8 cells
+        ;horizontal level bars: "Vol"/"Rss" + 15 cells
         #copy16 s_lvol,mktp
         lda #3
         sta mkw
         lda #0
         sta mkflg
         lda #9
-        ldx #21
+        ldx #18
         jsr mklbl
         lda #9
         sta brow
         lda #0
-        ldx #25
+        ldx #22
         jsr mkbar
         #copy16 s_lrss,mktp
         lda #3
@@ -1457,13 +1759,23 @@ buildui
         lda #0
         sta mkflg
         lda #10
-        ldx #21
+        ldx #18
         jsr mklbl
         lda #10
         sta brow
-        lda #8
-        ldx #25
+        lda #15
+        ldx #22
         jsr mkbar
+        ;stereo indicator label (under Rss bar)
+        #copy16 stindstr,mktp
+        lda #10
+        sta mkw
+        lda #0
+        sta mkflg
+        lda #11
+        ldx #18
+        jsr mklbl
+        #storeset widgets,w_stind
         rts
         .bend
 
@@ -1518,11 +1830,20 @@ a_mute
         jmp cbend
         .bend
 
-a_deem
+a_e50
         .block
         #pushptr this
-        lda st_deem
-        eor #1
+        lda #0
+        sta st_deem
+        jsr r_deem
+        jsr updui
+        jmp cbend
+        .bend
+
+a_e75
+        .block
+        #pushptr this
+        lda #1
         sta st_deem
         jsr r_deem
         jsr updui
