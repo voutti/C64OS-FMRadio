@@ -19,6 +19,7 @@
         #inc_s "toolkit"
         #inc_s "memory"
         #inc_s "timers"
+        #inc_s "file"
 
         #inc_tks "tksizes"
         #inc_tks "tkview"
@@ -97,6 +98,15 @@ w_fku  = 13
 w_fkd  = 14
 w_e75  = 15
 w_stind = 16
+w_save = 17
+w_name = 18
+
+;--- presets ---
+NPRESET  = 8       ;max stored channel presets
+prsize   = 19      ;record: used(1) + freq(2) + name(16)
+pnamlen  = 16
+cfg_ver  = 1       ;config.i format version
+tkinpages = 6      ;pages allocated for the loaded tkinput.r class
 
 ;---------------------------------------
 ;Data Structures
@@ -120,8 +130,8 @@ layer    .word l_update
 
 ; ------------------------------------
 ; draw context
-drawctx  .word scrbuf      ;Char Origin
-         .word colbuf      ;Colr Origin
+drawctx  .word 0           ;Char Origin (private buffer, set in init)
+         .word 0           ;Colr Origin (private buffer, set in init)
          .byte screen_cols ;Buff Width
          .byte screen_cols ;Draw Width
          .byte screen_rows ;Draw Height
@@ -152,11 +162,12 @@ st_vol   .byte $0a     ;volume 0..15
 st_freq  .word 1000    ;100kHz units -> 100.0 MHz
 st_rssi  .byte 0       ;last RSSI 0..127
 st_stind .byte 0       ;stereo indicator 0/1
+st_psel  .byte $ff     ;selected preset slot ($ff=none)
 
 ;--- widget pointer store (w_* indices) ---
 widgets  .word 0,0,0,0,0,0,0,0
          .word 0,0,0,0,0,0,0,0
-         .word 0
+         .word 0,0,0
 
 ;--- i2c buffer + scratch ---
 i2cbuf   .byte 0,0,0,0
@@ -191,10 +202,15 @@ btmp     .byte 0
 brow     .byte 0
 bst      .byte 0
 mkbt     .byte 0
+ptmp     .byte 0
+ptmp2    .byte 0
+pidx     .byte 0
 i2cstat  .byte 0       ;0=I2C ok, 1=comms error (shown in status label)
 logttl   .byte 0       ;log-line auto-clear countdown (2s ticks)
 rssireq  .byte 0       ;set by timer, serviced in l_update
+frqbad   .byte 0       ;1=chip read was out-of-band (unconfigured)
 freqstr  .byte 0,0,0,0,0,0,0,0,0,0,0,0
+topfstr  .byte 0,0,0,0,0,0,0,0,0,0   ;top freq label (own buffer)
 statbuf  .fill 37,0     ;status/log line, space-padded to 36
 .if DEBUG
 dbgstr   .fill 20,0
@@ -203,6 +219,26 @@ dbgstr   .fill 20,0
 ;bar cell label pointers: [0..14]=volume, [15..29]=rssi
 barcells .word 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
          .word 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+;preset UI pointers + data
+pnamlbl  .word 0,0,0,0,0,0,0,0   ;name label ptrs
+pradbtn  .word 0,0,0,0,0,0,0,0   ;radio button ptrs
+pfrqlbl  .word 0,0,0,0,0,0,0,0   ;freq label ptrs
+pfrqstr  .fill NPRESET*9,0       ;per-preset formatted "NNN.NMHz"
+pfbase   .byte 0                 ;pfmt scratch (slot*9 base)
+
+;config block persisted to config.i. Extensible: add new
+;settings between cfgpsz and presets and bump cfg_ver.
+cfgblk
+cfgvers  .byte cfg_ver          ;format version
+cfgnpre  .byte NPRESET           ;number of preset slots
+cfgpsz   .byte prsize            ;record size
+presets  .fill NPRESET*prsize,0  ;[used,freqLo,freqHi,name x16] x N
+cfgsize  = *-cfgblk
+namebuf  .fill 17,0            ;TKInput backing store (16 chars + null)
+tkincls  .word 0               ;loaded TKInput class pointer (0 = none)
+clspg    .byte 0               ;class-load scratch (fref page)
+sclsp    .word 0               ;superclass ptr saved across class load
 
 ;~2-second RSSI poll timer struct
 tmr      .byte 0,0,0              ;ttime countdown
@@ -216,6 +252,7 @@ msg_noi2c .null "I2C library missing"
 msg_nordo .null "RDA5807 not found"
 msg_rdyok .null "RDA5807 detected"
 msg_i2cer .null "Failed to communicate with RDA5807"
+msg_full  .null "Presets full"
 
 s_pwron  .text "Power "
          .byte $ab,0
@@ -236,6 +273,14 @@ s_fkup   .null "+"
 s_fkdn   .null "-"
 s_lvol   .null "Vol"
 s_lrss   .null "Rss"
+s_save   .null "Store"
+s_del    .null "Del"
+s_name   .null "Name:"
+s_appttl .null "FM Radio"
+s_tkdir  .null "tk"
+s_tkinr  .null "tkinput.r"
+s_cfgnm  .null "config.i"
+s_empty  .null ""
 s_cell   .byte $20,0        ;1-char bar cell (reversed = solid block)
 stindstr .text "Stereo "
          .byte $aa,0
@@ -269,13 +314,33 @@ init
         cmp #>msg_rdyok
         bne nordf
         jsr r_getfreq
-        jsr readstate
-        jsr r_stind
-nordf
+        jsr readstate      ;power/settings from the chip are
+        jsr r_stind        ;authoritative (correct whether it is
+                           ;powered off or freshly reset)
+        lda frqbad
+        beq nordf
+        jsr r_freq         ;out-of-band tuning -> write the clamped
+nordf                      ;default channel; leaves power untouched
+
+        ;Load saved presets/settings (missing file -> defaults)
+        jsr loadcfg
+
+        ;Allocate a private layer buffer (char + color) so the
+        ;Toolkit draws into it and ctx2scr composites to the
+        ;system screen. Drawing straight to $0400/$d800 bypasses
+        ;the compositor and breaks menu/utility layering + keys.
+        lda #mapapp
+        ldx #4
+        jsr pgalloc
+        sty drawctx+d_coloro+1
+        lda #mapapp
+        ldx #4
+        jsr pgalloc
+        sty drawctx+d_origin+1
 
         ; Allocate memory for tk widgets
         lda #mapapp
-        ldx #12 ;UI object pool (~50 objects; 30 bar cells)
+        ldx #18 ;UI object pool (~77 objects)
         jsr pgalloc
         sty tkenv+te_mpool
 
@@ -284,6 +349,51 @@ nordf
         ;Load Custom TK Classes
         #ldxy tkenv
         jsr settkenv
+
+        ;Load & link the TKInput class from //os/tk/
+        ldx #"p"          ;path.lib
+        ldy #"a"
+        lda #2
+        jsr loadlib
+        cmp #0
+        beq noinput       ;path.lib missing -> skip TKInput
+        sta plsetnm+2
+        sta plpthad+2
+        sta plgopa+2
+        ldx #tkctrl       ;superclass = TKCtrl
+        jsr classptr
+        stx sclsp         ;save it: pgalloc/path.lib may use zp $2b-$2e
+        sty sclsp+1
+        lda #mapapp
+        ldx #tkinpages
+        jsr pgalloc
+        sty clspg
+        tya               ;A = fref page
+        ldx #"s"          ;system dir
+        jsr plgopa
+        lda clspg
+        ldx #<s_tkdir
+        ldy #>s_tkdir
+        jsr plpthad       ;-> //os/tk/
+        lda clspg
+        ldx #<s_tkinr
+        ldy #>s_tkinr
+        jsr plsetnm       ;tkinput.r
+        lda sclsp         ;restore superclass into `class` for linking
+        sta class
+        lda sclsp+1
+        sta class+1
+        ldy clspg
+        ldx #0
+        jsr loadreloc     ;loads + auto-links to TKCtrl
+        ldx class         ;link routine leaves the class ptr in `class`
+        ldy class+1
+        #stxy tkincls
+        ldx #"p"          ;path.lib no longer needed
+        ldy #"a"
+        lda #0
+        jsr unldlib
+noinput
 
         ldx #tkview
         jsr classptr
@@ -320,6 +430,9 @@ nopwr
         #ldxy layer
         jsr layerpush
 
+        lda layer+slindx   ;tell the toolkit which layer it lives on,
+        sta tkenv+te_layer ;else the env is treated as blurred (no keys)
+
         ldx layer+slindx
         jsr markredraw
 
@@ -333,6 +446,9 @@ willquit
         ;Cancel the RSSI poll timer
         lda #tcancel
         sta tmr+tstat
+
+        ;Persist presets/settings
+        jsr savecfg
 
         ;Unload Shared Libraries
         ldx #"i"          ;i2c.lib.r (id byte $49)
@@ -406,7 +522,6 @@ msgcmd   ;A -> Msg Command
         ;"Menu Enquiry" and "Menu Cmd"
         ;message types must be handled
         ;to support menu actions.
-
         #switch 4
         .byte mc_col
         .byte mc_menq,mc_mnu
@@ -510,6 +625,7 @@ l_update
         jsr settkenv
         jsr updbars       ;refresh bars from st_vol / st_rssi
         jsr updstind
+        jsr psync         ;auto-select matching preset radio
         lda tkenv+te_flags
         ora #tf_dirty
         sta tkenv+te_flags
@@ -546,11 +662,12 @@ l_cmd
 ; ------------------------------------
 l_prnt
         .block
-
-        #ldxy tkenv
+        #ldxy tkenv        ;toolkit routes keys to the focused TKInput
         jsr tkkprnt
+        lda tkenv+te_flags ;force a redraw so typed text shows
+        ora #tf_dirty
+        sta tkenv+te_flags
         jmp chkdirt
-
         .bend
 
 ; ------------------------------------
@@ -884,6 +1001,8 @@ r_scan
 ;st_freq.  chan = reg3>>6;  freq = 870+chan.
 r_getfreq
         .block
+        lda #0
+        sta frqbad
         #ldxy i2cbuf
         lda #2
         jsr i2cpreprw
@@ -908,6 +1027,26 @@ sh      lsr gfhi
         lda gfhi
         adc #>frq_min
         sta st_freq+1
+        ;chip can report an out-of-band channel before it
+        ;is powered/initialized -> fall back to frq_min
+        lda st_freq+1
+        cmp #>frq_min
+        bcc clamp
+        bne chkmax
+        lda st_freq
+        cmp #<frq_min
+        bcc clamp
+chkmax  lda #>frq_max
+        cmp st_freq+1
+        bcc clamp
+        bne fail
+        lda #<frq_max
+        cmp st_freq
+        bcc clamp
+        bcs fail
+clamp   #copy16 frq_min,st_freq
+        lda #1
+        sta frqbad        ;chip clearly not configured yet
 fail    rts
         .bend
 
@@ -1056,11 +1195,13 @@ applyall
 
 ;Format st_freq into freqstr as "NNN.NMHz".
 freqfmt
-        .block
         lda st_freq
         sta dlo
         lda st_freq+1
         sta dhi
+;Format the frequency in dlo/dhi into freqstr.
+freqfmtd
+        .block
         lda #0
         sta whole
 loop    lda dhi
@@ -1163,11 +1304,19 @@ p0      ldx #w_pwr
         jsr sstate
         ;Frequency
         jsr freqfmt
-        #copy16 freqstr,mktp
+        ldx #0             ;copy to own buffer; updpres/pfmt
+c8      lda freqstr,x      ;reuse freqstr, so the top label
+        sta topfstr,x      ;needs a private copy to survive
+        beq c8d
+        inx
+        cpx #10
+        bcc c8
+c8d     #copy16 topfstr,mktp
         ldx #w_freq
         jsr slabel
         jsr updbars
         jsr updstind
+        jsr updpres
         rts
         .bend
 
@@ -1426,6 +1575,468 @@ tmrtick
         .bend
 
 ;=======================================
+;Presets
+;=======================================
+
+;A=slot -> stmp = presets + slot*19 (offset < 256).
+precptr
+        .block
+        sta ptmp          ;slot
+        asl
+        sta ptmp2         ;slot*2
+        asl
+        asl
+        asl               ;slot*16
+        clc
+        adc ptmp2         ;+slot*2 = slot*18
+        clc
+        adc ptmp          ;+slot   = slot*19
+        clc
+        adc #<presets
+        sta stmp
+        lda #>presets
+        adc #0
+        sta stmp+1
+        rts
+        .bend
+
+;-> A = first free (used=0) slot, or $ff if none.
+pfree
+        .block
+        lda #0
+        sta pidx
+loop    lda pidx
+        jsr precptr
+        #rdxy stmp
+        jsr ptrthis
+        ldy #0
+        lda (this),y
+        beq found
+        inc pidx
+        lda pidx
+        cmp #NPRESET
+        bcc loop
+        lda #$ff
+        rts
+found   lda pidx
+        rts
+        .bend
+
+;Scan presets for one whose stored frequency == st_freq.
+;Match -> select that slot; no match -> deselect. Only
+;refreshes the radios when the selection actually changes.
+psync
+        .block
+        lda #0
+        sta pidx
+loop    lda pidx
+        jsr precptr
+        #rdxy stmp
+        jsr ptrthis
+        ldy #0
+        lda (this),y      ;used?
+        beq nxt
+        ldy #1
+        lda (this),y
+        cmp st_freq
+        bne nxt
+        ldy #2
+        lda (this),y
+        cmp st_freq+1
+        bne nxt
+        lda pidx          ;match
+        jmp setsel
+nxt     inc pidx
+        lda pidx
+        cmp #NPRESET
+        bcc loop
+        lda #$ff           ;no match
+setsel  cmp st_psel
+        beq done           ;unchanged -> no redraw
+        sta st_psel
+        jsr updpres
+done    rts
+        .bend
+
+;A=slot -> if used, tune to its stored frequency.
+ptune
+        .block
+        jsr precptr
+        #rdxy stmp
+        jsr ptrthis
+        ldy #0
+        lda (this),y
+        beq done          ;empty slot -> ignore
+        ldy #1
+        lda (this),y
+        sta st_freq
+        iny
+        lda (this),y
+        sta st_freq+1
+        jsr r_freq
+        jsr updui
+done    rts
+        .bend
+
+;Refresh all preset name+freq labels (name labels point at
+;the record name fields; freq strings are formatted here) and
+;the radio selection states.
+updpres
+        .block
+        lda #0
+        sta pidx
+loop    lda pidx          ;format this slot's frequency string
+        jsr pfmt
+        lda pidx          ;mark name label dirty
+        asl
+        tay
+        lda pnamlbl,y
+        sta stmp
+        lda pnamlbl+1,y
+        sta stmp+1
+        #rdxy stmp
+        jsr ptrthis
+        #setflag this,dflags,df_dirty
+        lda pidx          ;mark freq label dirty
+        asl
+        tay
+        lda pfrqlbl,y
+        sta stmp
+        lda pfrqlbl+1,y
+        sta stmp+1
+        #rdxy stmp
+        jsr ptrthis
+        #setflag this,dflags,df_dirty
+        lda pidx          ;radio cf_state = (slot==st_psel)
+        asl
+        tay
+        lda pradbtn,y
+        sta stmp
+        lda pradbtn+1,y
+        sta stmp+1
+        #rdxy stmp
+        jsr ptrthis
+        ldy #cflags
+        lda (this),y
+        and #(255-cf_state)
+        ldx pidx
+        cpx st_psel
+        bne wr
+        ora #cf_state
+wr      sta (this),y
+        #setflag this,dflags,df_dirty
+        inc pidx
+        lda pidx
+        cmp #NPRESET
+        bcs done
+        jmp loop
+done    rts
+        .bend
+
+;A=slot -> format its stored frequency into pfrqstr[slot],
+;or blank the string when the slot is unused.
+pfmt
+        .block
+        jsr precptr        ;stmp -> record, ptmp = slot
+        lda ptmp
+        asl
+        asl
+        asl                ;slot*8
+        clc
+        adc ptmp           ;slot*9
+        sta pfbase
+        #rdxy stmp
+        jsr ptrthis
+        ldy #0
+        lda (this),y       ;used?
+        beq blank
+        ldy #1
+        lda (this),y
+        sta dlo
+        iny
+        lda (this),y
+        sta dhi
+        jsr freqfmtd       ;-> freqstr (8 chars + null)
+        ldx pfbase
+        ldy #0
+cp      lda freqstr,y
+        sta pfrqstr,x
+        beq done
+        inx
+        iny
+        cpy #9
+        bcc cp
+        rts
+blank   ldx pfbase         ;8 spaces so the label clears on
+        ldy #8             ;redraw, then null terminator
+        lda #$20
+bl      sta pfrqstr,x
+        inx
+        dey
+        bne bl
+        lda #0
+        sta pfrqstr,x
+done    rts
+        .bend
+
+;Build 8 preset rows (blue name label + radio) at
+;rows 14..21, then link the radios into one group.
+buildpres
+        .block
+        lda #0
+        sta pidx
+loop    lda pidx          ;radio on the left
+        jsr precptr
+        lda #bt_rad
+        sta mkbt
+        #copy16 s_empty,mktp
+        #copy16 a_preset,mktg
+        lda #3
+        sta mkw
+        lda pidx
+        clc
+        adc #15           ;row = 15 + slot
+        ldx #2
+        jsr mkbtn
+        #rdxy mkobj        ;tag = slot index
+        jsr ptrthis
+        lda pidx
+        ldy #tag
+        sta (this),y
+        lda pidx
+        asl
+        tay
+        lda mkobj
+        sta pradbtn,y
+        lda mkobj+1
+        sta pradbtn+1,y
+        lda pidx          ;name label -> record name field
+        jsr precptr
+        lda stmp
+        clc
+        adc #3
+        sta mktp
+        lda stmp+1
+        adc #0
+        sta mktp+1
+        lda #16
+        sta mkw
+        lda #0
+        sta mkflg
+        lda pidx
+        clc
+        adc #15
+        ldx #6
+        jsr mklbl
+        #rdxy mkobj        ;blue name colour
+        jsr ptrthis
+        lda #cblue
+        ldy #bcolor
+        sta (this),y
+        lda pidx
+        asl
+        tay
+        lda mkobj
+        sta pnamlbl,y
+        lda mkobj+1
+        sta pnamlbl+1,y
+        lda pidx          ;freq label -> pfrqstr[slot], x23 w8
+        asl
+        asl
+        asl
+        clc
+        adc pidx          ;slot*9
+        clc
+        adc #<pfrqstr
+        sta mktp
+        lda #>pfrqstr
+        adc #0
+        sta mktp+1
+        lda #8
+        sta mkw
+        lda #0
+        sta mkflg
+        lda pidx
+        clc
+        adc #15
+        ldx #23
+        jsr mklbl
+        #rdxy mkobj        ;blue like the name
+        jsr ptrthis
+        lda #cblue
+        ldy #bcolor
+        sta (this),y
+        lda pidx
+        asl
+        tay
+        lda mkobj
+        sta pfrqlbl,y
+        lda mkobj+1
+        sta pfrqlbl+1,y
+        inc pidx
+        lda pidx
+        cmp #NPRESET
+        bcs pbdone
+        jmp loop
+pbdone  jsr linkpres
+        rts
+        .bend
+
+;Chain the 8 preset radios into one bnext ring so they
+;behave as a single mutually-exclusive group.
+linkpres
+        .block
+        lda #0
+        sta pidx
+loop    lda pidx
+        asl
+        tay
+        lda pradbtn,y
+        sta stmp
+        lda pradbtn+1,y
+        sta stmp+1
+        lda pidx           ;next index (wrap)
+        clc
+        adc #1
+        cmp #NPRESET
+        bcc nn
+        lda #0
+nn      asl
+        tay
+        lda pradbtn,y
+        sta ptmp
+        lda pradbtn+1,y
+        sta ptmp2
+        #rdxy stmp
+        jsr ptrthis
+        ldy #bnext
+        lda ptmp
+        sta (this),y
+        iny
+        lda ptmp2
+        sta (this),y
+        inc pidx
+        lda pidx
+        cmp #NPRESET
+        bcc loop
+        rts
+        .bend
+
+;Reset the name field to empty. For a TKInput, re-init
+;its length/index via setstr_; for the fallback label
+;just mark it dirty.
+nameclr
+        .block
+        lda #0
+        sta namebuf        ;empty string
+        lda widgets+w_name*2
+        sta stmp
+        lda widgets+w_name*2+1
+        sta stmp+1
+        #rdxy stmp
+        jsr ptrthis
+        lda tkincls
+        ora tkincls+1
+        beq lblonly
+        ldy #setstr_
+        jsr getmethod
+        ldx #<namebuf
+        ldy #>namebuf
+        lda #pnamlen
+        jsr sysjmp
+lblonly #setflag this,dflags,df_dirty
+        rts
+        .bend
+
+;=======================================
+;Config file (presets + settings) : config.i
+;=======================================
+
+;Point the Application file reference at "config.i".
+;appfileref ($0338) holds a page-aligned pointer to the
+;bundle FileRef; write the name into its frefname field.
+setcfgnm
+        .block
+        lda appfileref
+        clc
+        adc #frefname
+        sta $fb
+        lda appfileref+1
+        adc #0
+        sta $fc
+        ldy #0
+lp      lda s_cfgnm,y
+        sta ($fb),y
+        beq done
+        iny
+        cpy #17
+        bcc lp
+done    rts
+        .bend
+
+;Zero the whole preset table and deselect.
+presclr
+        .block
+        ldx #0
+        lda #0
+clr     sta presets,x
+        inx
+        cpx #(NPRESET*prsize)
+        bcc clr
+        lda #$ff
+        sta st_psel
+        rts
+        .bend
+
+;Load config.i over the defaults. Missing file -> keep
+;defaults; wrong version/layout -> reset presets.
+loadcfg
+        .block
+        jsr setcfgnm
+        #rdxy appfileref
+        lda #ff_r
+        jsr fopen
+        bcs none          ;not found -> defaults
+        jsr fread
+        .word cfgblk
+        .word cfgsize
+        jsr fclose
+        lda cfgvers       ;validate format
+        cmp #cfg_ver
+        bne bad
+        lda cfgnpre
+        cmp #NPRESET
+        bne bad
+        lda cfgpsz
+        cmp #prsize
+        bne bad
+        rts
+bad     jsr presclr
+none    rts
+        .bend
+
+;Write the config block to config.i (create/overwrite).
+savecfg
+        .block
+        lda #cfg_ver      ;refresh header before writing
+        sta cfgvers
+        lda #NPRESET
+        sta cfgnpre
+        lda #prsize
+        sta cfgpsz
+        jsr setcfgnm
+        #rdxy appfileref
+        lda #(ff_w|ff_o)
+        jsr fopen
+        bcs none
+        jsr fwrite
+        .word cfgblk
+        .word cfgsize
+        jsr fclose
+none    rts
+        .bend
+
+;=======================================
 ;UI construction
 ;=======================================
 
@@ -1565,6 +2176,15 @@ ccol    sta btmp
 ;Build the whole radio UI.
 buildui
         .block
+        ;app title (top left, same row as centered freq)
+        #copy16 s_appttl,mktp
+        lda #8
+        sta mkw
+        lda #0
+        sta mkflg
+        lda #1
+        ldx #2
+        jsr mklbl
         ;frequency (centered)
         jsr freqfmt
         #copy16 freqstr,mktp
@@ -1776,6 +2396,74 @@ buildui
         ldx #18
         jsr mklbl
         #storeset widgets,w_stind
+        ;Save current frequency as a preset
+        lda #bt_psh
+        sta mkbt
+        #copy16 s_save,mktp
+        #copy16 a_save,mktg
+        lda #7
+        sta mkw
+        lda #14
+        ldx #2
+        jsr mkbtn
+        #storeset widgets,w_save
+        ;Delete the selected preset
+        #copy16 s_del,mktp
+        #copy16 a_delete,mktg
+        lda #5
+        sta mkw
+        lda #14
+        ldx #10
+        jsr mkbtn
+        ;name entry: "Name:" label + TKInput field
+        #copy16 s_name,mktp
+        lda #6
+        sta mkw
+        lda #0
+        sta mkflg
+        lda #14
+        ldx #18
+        jsr mklbl
+        lda tkincls        ;TKInput class available?
+        ora tkincls+1
+        beq nofield
+        #rdxy tkincls      ;X/Y = class pointer (value, not address)
+        jsr tknew
+        #stxy mkobj
+        ldy #init_
+        jsr getmethod
+        jsr sysjmp
+        ldy #setstr_       ;buffer = namebuf, max 16 chars
+        jsr getmethod
+        ldx #<namebuf
+        ldy #>namebuf
+        lda #pnamlen
+        jsr sysjmp
+        #setobj8 this,rsmask,%00000101
+        #setobj8 this,offtop,14
+        #setobj8 this,offleft,24
+        #setobj8 this,width,15
+        #rdxy tkenv+te_rview
+        jsr appendto
+        jmp namedone
+nofield #copy16 namebuf,mktp   ;fallback: blue label (no typing)
+        lda #16
+        sta mkw
+        lda #0
+        sta mkflg
+        lda #14
+        ldx #24
+        jsr mklbl
+        #rdxy mkobj
+        jsr ptrthis
+        lda #cblue
+        ldy #bcolor
+        sta (this),y
+namedone
+        #rdxy mkobj        ;X/Y = the object (appendto/ptrthis clobbered them)
+        #storeset widgets,w_name
+        ;preset rows (blue name + radio)
+        jsr buildpres
         rts
         .bend
 
@@ -1927,6 +2615,92 @@ a_fkd
         jmp cbend
         .bend
 
+;Select a preset radio (this=radio; tag=slot).
+a_preset
+        .block
+        #pushptr this
+        ldy #tag
+        lda (this),y
+        sta st_psel
+        jsr ptune
+        jmp cbend
+        .bend
+
+;Save the current frequency into the next free preset
+;slot, using the typed name (or the frequency if none).
+a_save
+        .block
+        #pushptr this
+        jsr pfree
+        cmp #$ff
+        beq full
+        sta st_psel
+        jsr precptr        ;A=slot -> stmp=rec
+        #rdxy stmp
+        jsr ptrthis
+        ldy #0
+        lda #1
+        sta (this),y       ;used=1
+        ldy #1
+        lda st_freq
+        sta (this),y
+        iny
+        lda st_freq+1
+        sta (this),y
+        ldx #0             ;copy namebuf, pad with spaces to 16
+        ldy #3
+cpn     lda namebuf,x
+        beq padn
+        sta (this),y
+        inx
+        iny
+        cpx #pnamlen
+        bcc cpn
+        jmp donen
+padn    lda #$20
+pdn     sta (this),y
+        iny
+        cpy #(3+pnamlen)
+        bcc pdn
+donen   jsr updpres
+        jsr nameclr        ;clear the input after saving
+        jsr savecfg        ;persist to config.i
+        jmp cbend
+full    #copy16 msg_full,mktp
+        jsr setstat
+        jmp cbend
+        .bend
+
+;Delete the currently selected preset (st_psel), if any,
+;then persist.  The freed slot becomes the next Store target.
+a_delete
+        .block
+        #pushptr this
+        lda st_psel
+        cmp #$ff
+        beq nodel          ;nothing selected
+        jsr precptr        ;A=slot -> stmp = record
+        #rdxy stmp
+        jsr ptrthis
+        ldy #0
+        lda #0
+        sta (this),y       ;used=0
+        iny
+        sta (this),y       ;freq lo=0
+        iny
+        sta (this),y       ;freq hi=0
+        lda #$20           ;name = spaces so the label clears
+cl      iny                ;on redraw (labels don't erase)
+        sta (this),y
+        cpy #(3+pnamlen-1)
+        bcc cl
+        lda #$ff
+        sta st_psel        ;deselect
+        jsr updpres
+        jsr savecfg
+nodel   jmp cbend
+        .bend
+
 ;Add A (100kHz units) to st_freq; wrap to frq_min
 ;if it exceeds frq_max. Pushes freq and refreshes.
 addfreq
@@ -2001,6 +2775,13 @@ ctx2scr     #syscall lscr,ctx2scr_
 quitapp     #syscall lser,quitapp_
 loadlib     #syscall lser,loadlib_
 unldlib     #syscall lser,unldlib_
+loadreloc   #syscall lser,loadreloc_
+
+         #inc_h "file"
+fopen       #syscall lfil,fopen_
+fread       #syscall lfil,fread_
+fwrite      #syscall lfil,fwrite_
+fclose      #syscall lfil,fclose_
 
          #inc_h "timers"
 timeque     #syscall ltim,timeque_
@@ -2029,3 +2810,10 @@ i2creset  jmp reset_
 i2cpreprw jmp prep_rw_
 i2creadrg jmp readreg_
 i2cwritrg jmp writreg_
+
+;path.lib jump table. High bytes are patched at
+;runtime by init with the page from loadlib.
+        #inc_h "path"
+plsetnm   jmp setname_
+plpthad   jmp pathadd_
+plgopa    jmp gopath_
