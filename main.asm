@@ -74,7 +74,7 @@ c_on     = cgreen  ;toggle button on colour
 c_off    = cdgrey  ;toggle button off colour
 
 ;--- debug ---
-DEBUG    = 1       ;1 = log each i2c register write in the status label; set 0 to remove
+DEBUG    = 0       ;1 = log each i2c register write in the status label; set 0 to remove
 log_ttl  = 10      ;log line auto-clears after this many 2s poll ticks (~20s)
 
 ;custom async message code (timer trigger -> msgcmd)

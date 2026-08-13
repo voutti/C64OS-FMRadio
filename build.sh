@@ -1,13 +1,12 @@
 #!/bin/bash
 
-#COMPILER=/c/users/timo.voutilainen/apps/64tass-1.60.3243/64tass.exe
 COMPILER=64tass
 ASCII2PETSCII="python ../ascii2petscii.py"
 PETSCII2ASCII="python ../petscii2ascii.py"
 D64IMAGE="bundle.d64"
 IDE64HDD_IMAGE="./vice/c64os_ide64_c64os_1_09.hdd"
 
-$COMPILER -I ./ -a main.asm -o main.o || exit 1
+$COMPILER -I ./ -DTASM64=1 -DTMPASM=0 -a main.asm -o main.o || exit 1
 $ASCII2PETSCII about.ascii about.t || exit 1
 $ASCII2PETSCII menu.ascii menu.m || exit 1
 
