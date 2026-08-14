@@ -70,8 +70,6 @@ rssi_flr = 15      ;RSSI noise floor (bar empty at/below this)
 rssi_top = 63      ;RSSI at full bar (useful window = flr..top)
 frq_min  = 870     ;87.0 MHz (100kHz units)
 frq_max  = 1080    ;108.0 MHz
-c_on     = cgreen  ;toggle button on colour
-c_off    = cdgrey  ;toggle button off colour
 
 ;--- debug ---
 DEBUG    = 0       ;1 = log each i2c register write in the status label; set 0 to remove
@@ -149,8 +147,6 @@ tkenv
         .word 0       ;clikmus view
         .byte 0       ;ctx2scr ppsx
         .byte 0       ;ctx2scr posy
-
-strcolor .byte clblue
 
 ;--- radio state model (defaults) ---
 st_pwr   .byte 0       ;power 0/1
@@ -522,24 +518,13 @@ msgcmd   ;A -> Msg Command
         ;"Menu Enquiry" and "Menu Cmd"
         ;message types must be handled
         ;to support menu actions.
-        #switch 4
-        .byte mc_col
+        #switch 3
         .byte mc_menq,mc_mnu
         .byte mc_rssi
-        .rta setcolr
         .rta mnuenq,mnucmd
         .rta dorssi
 
 done     sec            ;Msg Not Handled
-        rts
-
-setcolr  ;X -> Color Code
-        stx strcolor
-
-        ldx layer+slindx
-        jsr markredraw
-
-        clc            ;Msg Was Handled
         rts
 
 dorssi   ;timer asked for an RSSI refresh (app ctx)
@@ -570,46 +555,6 @@ mnucmd   ;X -> Menu Action Code
         sec ;Action Code Not Recognized
         rts
         .bend
-
-.comment
-drawmain
-        .block
-        ;Configure the Draw Context
-        #ldxy drawctx
-        jsr setctx
-
-        ;Set Draw Properties and Color
-        ldx #(d_crsr_h|d_petscr)
-        ldy strcolor
-        jsr setdprops
-
-        ;Clear the Draw Context
-        lda #" "
-        jsr ctxclear
-
-        ;Set Context Draw Position
-
-        #ldxy 5   ;Row  5
-        clc
-        jsr setlrc
-
-        #ldxy 11  ;Col 11     (40-18)/2
-        sec
-        jsr setlrc
-
-        ;Loop over message, outputting
-        ;with calls to ctxdraw.
-
-        ldx #0
-next    lda hello_s,x
-        beq done
-        jsr ctxdraw
-        inx
-        bne next
-
-done    rts
-        .bend
-.endcomment
 
 ; ------------------------------------
 l_update
@@ -669,11 +614,6 @@ l_prnt
         sta tkenv+te_flags
         jmp chkdirt
         .bend
-
-; ------------------------------------
-thisdirt
-        #setflag this,dflags,df_dirty
-        rts
 
 ; ------------------------------------
 chkdirt
@@ -2758,17 +2698,10 @@ externs  ;C64 OS KERNAL Link Table
 
         #inc_h "memory"
 pgalloc     #syscall lmem,pgalloc_
-memcpy      #syscall lmem,memcpy_
-pgfree      #syscall lmem,pgfree_
 
         #inc_h "screen"
-        #inc_h "util.frame"
 markredraw  #syscall lscr,markredraw_         
 layerpush   #syscall lscr,layerpush_
-setlrc      #syscall lscr,setlrc_
-setdprops   #syscall lscr,setdprops_
-ctxclear    #syscall lscr,ctxclear_
-ctxdraw     #syscall lscr,ctxdraw_
 ctx2scr     #syscall lscr,ctx2scr_
 
          #inc_h "service"
@@ -2788,7 +2721,6 @@ timeque     #syscall ltim,timeque_
 msgapp      #syscall ltim,msgapp_
 
          #inc_h "toolkit"
-setctx      #syscall ltkt,setctx_
 classptr    #syscall ltkt,classptr_
 tknew       #syscall ltkt,tknew_
 appendto    #syscall ltkt,appendto_
