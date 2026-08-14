@@ -125,6 +125,7 @@ c8d     #copy16 topfstr,mktp
         jsr slabel
         jsr updbars
         jsr updstind
+        jsr updfmlk
         jsr updpres
         rts
         .bend
@@ -275,6 +276,19 @@ updstind
 set     sta stindstr+7
         #copy16 stindstr,mktp
         ldx #w_stind
+        jmp slabel
+        .bend
+
+;Show "FM Lock X" ($ab=locked, $aa=not) right of stereo.
+updfmlk
+        .block
+        lda #$aa
+        ldx st_fmtr
+        beq set
+        lda #$ab
+set     sta fmlkstr+8
+        #copy16 fmlkstr,mktp
+        ldx #w_fmlk
         jmp slabel
         .bend
 
@@ -732,6 +746,16 @@ buildui
         ldx #18
         jsr mklbl
         #storeset widgets,w_stind
+        ;FM lock indicator label (right of stereo indicator)
+        #copy16 fmlkstr,mktp
+        lda #10
+        sta mkw
+        lda #0
+        sta mkflg
+        lda #11
+        ldx #29
+        jsr mklbl
+        #storeset widgets,w_fmlk
         ;Save current frequency as a preset
         lda #bt_psh
         sta mkbt

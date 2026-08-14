@@ -70,6 +70,7 @@ w_e75  = 15
 w_stind = 16
 w_save = 17
 w_name = 18
+w_fmlk = 19
 
 ;--- presets ---
 NPRESET  = 8       ;max stored channel presets
@@ -130,12 +131,13 @@ st_vol   .byte $0a     ;volume 0..15
 st_freq  .word 1000    ;100kHz units -> 100.0 MHz
 st_rssi  .byte 0       ;last RSSI 0..127
 st_stind .byte 0       ;stereo indicator 0/1
+st_fmtr  .byte 0       ;FM TRUE / station lock 0/1
 st_psel  .byte $ff     ;selected preset slot ($ff=none)
 
 ;--- widget pointer store (w_* indices) ---
 widgets  .word 0,0,0,0,0,0,0,0
          .word 0,0,0,0,0,0,0,0
-         .word 0,0,0
+         .word 0,0,0,0
 
 ;--- i2c buffer + scratch ---
 i2cbuf   .byte 0,0,0,0
@@ -252,6 +254,8 @@ s_cfgnm  .null "config.i"
 s_empty  .null ""
 s_cell   .byte $20,0        ;1-char bar cell (reversed = solid block)
 stindstr .text "Stereo "
+         .byte $aa,0
+fmlkstr  .text "FM Lock "
          .byte $aa,0
 
 ;---------------------------------------
@@ -545,6 +549,7 @@ l_update
         jsr settkenv
         jsr updbars       ;refresh bars from st_vol / st_rssi
         jsr updstind
+        jsr updfmlk
         jsr psync         ;auto-select matching preset radio
         lda tkenv+te_flags
         ora #tf_dirty

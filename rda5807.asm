@@ -27,6 +27,7 @@ m_deemph = $08
 m_voldac = $0f
 m_stc    = $40     ;seek/tune complete (status hi byte)
 m_st     = $04     ;stereo indicator (reg 0x0A bit10, hi byte)
+m_fmtr   = $01     ;FM TRUE / station lock (reg 0x0B bit8, hi byte)
 m_lnap   = $c0     ;LNA antenna-port mask (reg 0x05 lo)
 lna_port = $c0     ;$80 = LNAP input (RDA5807 reset default), $40 = LNAN, $c0 = DUAL (both inputs — often best)
 vol_max  = $0f
@@ -405,7 +406,11 @@ r_rssi
         clc
         jsr i2creadrg
         bne fail          ;no ack -> keep previous
-        lda i2cbuf        ;bits15:8; RSSI in bits15:9
+        lda i2cbuf        ;bits15:9=RSSI, bit8=FM TRUE
+        and #m_fmtr
+        jsr bit01
+        sta st_fmtr
+        lda i2cbuf
         lsr               ;-> RSSI[6:0]
         sta st_rssi
         jmp i2cok
