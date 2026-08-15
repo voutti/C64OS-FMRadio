@@ -526,14 +526,22 @@ ccol    sta btmp
 ;Build the whole radio UI.
 buildui
         .block
-        ;app title (top left, same row as centered freq)
-        #copy16 s_appttl,mktp
-        lda #8
+        ;app title beside the icon: "FM" (row 2), "Radio" (row 3, +1 col)
+        #copy16 s_titfm,mktp
+        lda #2
         sta mkw
         lda #0
         sta mkflg
-        lda #1
-        ldx #2
+        lda #2
+        ldx #6
+        jsr mklbl
+        #copy16 s_titrad,mktp
+        lda #5
+        sta mkw
+        lda #0
+        sta mkflg
+        lda #3
+        ldx #7
         jsr mklbl
         ;frequency (centered)
         jsr freqfmt
@@ -557,6 +565,23 @@ buildui
         jsr mklbl
         #storeset widgets,w_stat
         ;--- left column ---
+        ;App icon: 3x3 glyphs (screen codes $f7-$ff) above Power
+        lda #3
+        sta mkw
+        lda #0
+        sta mkflg
+        #copy16 icnrow0,mktp
+        lda #2
+        ldx #2
+        jsr mklbl
+        #copy16 icnrow1,mktp
+        lda #3
+        ldx #2
+        jsr mklbl
+        #copy16 icnrow2,mktp
+        lda #4
+        ldx #2
+        jsr mklbl
         ;Power (push button)
         lda #bt_psh
         sta mkbt
@@ -564,7 +589,7 @@ buildui
         #copy16 a_power,mktg
         lda #9
         sta mkw
-        lda #3
+        lda #5
         ldx #2
         jsr mkbtn
         #storeset widgets,w_pwr
@@ -575,7 +600,7 @@ buildui
         #copy16 a_ster,mktg
         lda #16
         sta mkw
-        lda #5
+        lda #7
         ldx #2
         jsr mkbtn
         #storeset widgets,w_ster
@@ -583,7 +608,7 @@ buildui
         #copy16 a_bass,mktg
         lda #16
         sta mkw
-        lda #7
+        lda #8
         ldx #2
         jsr mkbtn
         #storeset widgets,w_bass
@@ -602,7 +627,7 @@ buildui
         #copy16 a_e50,mktg
         lda #16
         sta mkw
-        lda #11
+        lda #10
         ldx #2
         jsr mkbtn
         #storeset widgets,w_e50
@@ -610,7 +635,7 @@ buildui
         #copy16 a_e75,mktg
         lda #16
         sta mkw
-        lda #12
+        lda #11
         ldx #2
         jsr mkbtn
         #storeset widgets,w_e75

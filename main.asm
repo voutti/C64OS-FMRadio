@@ -247,7 +247,8 @@ s_lrss   .null "Rss"
 s_save   .null "Store"
 s_del    .null "Del"
 s_name   .null "Name:"
-s_appttl .null "FM Radio"
+s_titfm  .null "FM"
+s_titrad .null "Radio"
 s_tkdir  .null "tk"
 s_tkinr  .null "tkinput.r"
 s_cfgnm  .null "config.i"
@@ -257,6 +258,11 @@ stindstr .text "Stereo "
          .byte $aa,0
 fmlkstr  .text "FM Lock "
          .byte $aa,0
+;App icon rows: the 3x3 icon glyphs are resident at screen
+;codes $f7-$ff (top $f7-$f9, mid $fa-$fc, bottom $fd-$ff).
+icnrow0  .byte $f7,$f8,$f9,0
+icnrow1  .byte $fa,$fb,$fc,0
+icnrow2  .byte $fd,$fe,$ff,0
 
 ;---------------------------------------
 
