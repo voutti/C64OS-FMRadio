@@ -1,1 +1,0 @@
-;C64 Archiver format. CAR files use PETSCII filenames, retain CBM FileType, and support subdirectories.

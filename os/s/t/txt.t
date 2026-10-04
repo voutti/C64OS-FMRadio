@@ -1,1 +1,0 @@
-;Text file. Maybe either PETSCII or ASCII encoded. May contain MText codes.

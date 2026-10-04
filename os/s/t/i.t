@@ -1,1 +1,0 @@
-;C64 OS binary config data file format. Auto-generated. These may be safely scratched.

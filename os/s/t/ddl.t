@@ -1,1 +1,0 @@
-;Doodle. Hi-Res graphics file format. Alternative to .dd

@@ -1,1 +1,0 @@
-;C64 OS Application menu files. Mostly PETSCII text, plus the $01 byte for Utility action code.

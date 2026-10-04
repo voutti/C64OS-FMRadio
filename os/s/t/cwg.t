@@ -1,1 +1,0 @@
-;Create with Garfield. Multi-Color graphics format.

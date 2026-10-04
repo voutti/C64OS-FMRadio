@@ -884,9 +884,14 @@ a_ster
 a_bass
         .block
         #pushptr this
+.if CHIP_TEA
+        lda #0
+        sta st_bass
+.else
         lda st_bass
         eor #1
         sta st_bass
+.endif
         jsr r_bass
         jsr updui
         jmp cbend
@@ -926,6 +931,11 @@ a_e75
 a_volu
         .block
         #pushptr this
+.if CHIP_TEA
+        jsr r_vol
+        jsr updui
+        jmp cbend
+.else
         lda st_vol
         cmp #vol_max
         bcs done
@@ -933,17 +943,24 @@ a_volu
 done    jsr r_vol
         jsr updui
         jmp cbend
+.endif
         .bend
 
 a_vold
         .block
         #pushptr this
+.if CHIP_TEA
+        jsr r_vol
+        jsr updui
+        jmp cbend
+.else
         lda st_vol
         beq done
         dec st_vol
 done    jsr r_vol
         jsr updui
         jmp cbend
+.endif
         .bend
 
 a_scnu

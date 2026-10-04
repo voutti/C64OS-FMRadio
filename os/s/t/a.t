@@ -1,1 +1,0 @@
-;Assembly source file. Typically in TurboMacroPro binary file format.

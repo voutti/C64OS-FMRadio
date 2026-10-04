@@ -7,6 +7,15 @@ radioadr = $11     ;RDA5807 random-access i2c addr (7-bit)
 chipidrg = $00     ;chip-id register
 chipidvl = $58     ;expected RDA5807 chip id
 
+;A -> chip id byte. C clear if supported.
+r_chipidok
+        cmp #chipidvl
+        beq ok
+        sec
+        rts
+ok      clc
+        rts
+
 ;--- RDA5807 registers & bit masks ---
 rd_ctrl  = $02
 rd_chan  = $03

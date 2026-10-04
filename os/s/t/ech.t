@@ -1,1 +1,0 @@
-;Eliza for C64 OS, chat document file format.

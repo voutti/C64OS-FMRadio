@@ -1,1 +1,0 @@
-;Hi-Eddi. Hi-Res graphics file format.

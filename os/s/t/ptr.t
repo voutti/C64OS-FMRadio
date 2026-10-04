@@ -1,1 +1,0 @@
-;Mouse Pointer input driver.

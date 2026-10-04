@@ -35,13 +35,11 @@
         #inc_tkh "tkobj"
 
 ;---------------------------------------
-;RDA5807 FM tuner via C64 OS i2c.lib.r
+;FM tuner via C64 OS i2c.lib.r
 ;Load id bytes are the PETSCII filename
 ;chars "I2" (on disk: I2C.LIB.R); 3 pages.
 i2cpages = 3       ;i2c.lib.r size in pages (transport, not chip)
-;The RDA5807 chip constants (identity, registers, bit
-;masks, band limits, RSSI window) live in rda5807.asm
-;so a different tuner only needs that one file swapped.
+;CHIP_TEA=0 -> RDA5807 build, CHIP_TEA=1 -> TEA5767 build.
 
 ;--- debug ---
 DEBUG    = 0       ;1 = log each i2c register write in the status label; set 0 to remove
@@ -140,7 +138,11 @@ widgets  .word 0,0,0,0,0,0,0,0
          .word 0,0,0,0
 
 ;--- i2c buffer + scratch ---
+.if CHIP_TEA
+i2cbuf   .byte 0,0,0,0,0
+.else
 i2cbuf   .byte 0,0,0,0
+.endif
 radiomsg .word msg_probe   ;probe result, shown in status label
 updreg   .byte 0
 updmh    .byte 0
@@ -164,6 +166,19 @@ rtry     .byte 0
 gfhi     .byte 0
 gflo     .byte 0
 swto     .byte 0
+.if CHIP_TEA
+tw0      .byte 0
+tw1      .byte 0
+tw2      .byte 0
+tw3      .byte 0
+tw4      .byte 0
+tscan    .byte 0
+divhi    .byte 0
+divlo    .byte 0
+dverr    .byte 0
+rdvhi    .byte 0
+rdvlo    .byte 0
+.endif
 blev     .byte 0
 bidx     .byte 0
 bofs     .byte 0
@@ -218,11 +233,21 @@ tmr      .byte 0,0,0              ;ttime countdown
          .byte 120,0,0            ;tvalu reset (~2s @ 60Hz)
 
 ;--- strings ---
+.if CHIP_TEA
+msg_probe .null "Probing TEA5767..."
+.else
 msg_probe .null "Probing RDA5807..."
+.endif
 msg_noi2c .null "I2C library missing"
+.if CHIP_TEA
+msg_nordo .null "TEA5767 not found"
+msg_rdyok .null "TEA5767 detected"
+msg_i2cer .null "Failed to communicate with TEA5767"
+.else
 msg_nordo .null "RDA5807 not found"
 msg_rdyok .null "RDA5807 detected"
 msg_i2cer .null "Failed to communicate with RDA5807"
+.endif
 msg_full  .null "Presets full"
 
 s_pwron  .text "Power "
@@ -230,19 +255,32 @@ s_pwron  .text "Power "
 s_pwrof  .text "Power "
          .byte $aa,0
 s_stereo .null "Stereo"
+.if CHIP_TEA
+s_lbass  .null "Bass N/A"
+.else
 s_lbass  .null "Bass Boost"
+.endif
 s_lmute  .null "Mute"
 s_e50    .null "Emph 50us"
 s_e75    .null "Emph 75us"
+.if CHIP_TEA
+s_volup  .null "N/A"
+s_voldn  .null "N/A"
+.else
 s_volup  .null "Vol +"
 s_voldn  .null "Vol -"
+.endif
 s_scnup  .null "Scan >>"
 s_scndn  .null "Scan <<"
 s_fmup   .null "++"
 s_fmdn   .null "--"
 s_fkup   .null "+"
 s_fkdn   .null "-"
+.if CHIP_TEA
+s_lvol   .null "N/A"
+.else
 s_lvol   .null "Vol"
+.endif
 s_lrss   .null "Rss"
 s_save   .null "Store"
 s_del    .null "Del"
@@ -251,7 +289,11 @@ s_titfm  .null "FM"
 s_titrad .null "Radio"
 s_tkdir  .null "tk"
 s_tkinr  .null "tkinput.r"
+.if CHIP_TEA
+s_cfgnm  .null "config5767.i"
+.else
 s_cfgnm  .null "config.i"
+.endif
 s_empty  .null ""
 s_cell   .byte $20,0        ;1-char bar cell (reversed = solid block)
 stindstr .text "Stereo "
@@ -280,7 +322,7 @@ init
         #ldxy externs
         jsr initextern
 
-        ;Load i2c.lib and probe the RDA5807
+        ;Load i2c.lib and probe the selected FM tuner
         jsr radioinit
 
         ;If the chip was detected, sync st_freq with
@@ -441,7 +483,7 @@ willquit
         .bend
 
 ;---------------------------------------
-;Load i2c.lib, probe the RDA5807 (retrying,
+;Load i2c.lib, probe the selected tuner (retrying,
 ;since the tuner may still be powering up)
 ;and pick a status message. Sets radiomsg.
 radioinit
@@ -464,6 +506,11 @@ linked  sta i2creset+2
         sta rtry
 try     jsr i2creset
         jsr rdelay        ;let the tuner settle
+.if CHIP_TEA
+        jsr r_probe
+        bcc okc
+        jmp again
+.else
         #ldxy i2cbuf
         lda #2
         jsr i2cpreprw
@@ -473,8 +520,9 @@ try     jsr i2creset
         jsr i2creadrg
         bne again
         lda i2cbuf
-        cmp #chipidvl
-        beq okc
+        jsr r_chipidok
+        bcc okc
+.endif
 again   dec rtry
         bne try
         #copy16 msg_nordo,radiomsg
@@ -629,8 +677,12 @@ redraw
 ;codebase uses a single flat namespace, so
 ;these are textual .includes, not linked units)
 ;=======================================
-        .include "rda5807.asm"   ;FM tuner chip driver (swap this file per chip)
-        .include "ui.asm"        ;display, widget construction, button targets
+.if CHIP_TEA
+        .include "tea5767.asm"   ;TEA5767 tuner driver
+.else
+        .include "rda5807.asm"   ;RDA5807 tuner driver
+.endif
+        .include "ui.asm"        ;UI/actions (chip-specific behavior via CHIP_TEA)
         .include "presets.asm"   ;channel preset store
         .include "config.asm"    ;config.i load / save
         .include "externs.asm"   ;KERNAL link table + i2c.lib / path.lib jump tables

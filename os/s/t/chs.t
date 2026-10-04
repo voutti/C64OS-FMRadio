@@ -1,1 +1,0 @@
-;Chess for C64 OS, saved game file format.

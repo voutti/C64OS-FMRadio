@@ -1,1 +1,0 @@
-;Koala. Multi-color graphics file format. Alternative to .kla

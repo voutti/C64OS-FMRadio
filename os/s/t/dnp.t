@@ -1,1 +1,0 @@
-;CMD native partition image. Max size 16MB. Supports subdirectories.

@@ -1,1 +1,0 @@
-;ZIP archive file format. Can use multiple compression algorithms. Usually Deflate. Replaced .ARC files.

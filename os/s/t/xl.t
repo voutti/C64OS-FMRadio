@@ -1,1 +1,0 @@
-;TurboMacroPro label export, trimmed using the Exlabel Tool.
