@@ -167,7 +167,7 @@ slabel
         lda mktp
         ldx mktp+1
         jsr sysjmp
-        #setflag this,dflags,df_dirty
+        #setflag this,dflags,(df_dirty|df_opaqu)
         rts
         .bend
 
@@ -364,7 +364,7 @@ on      sta btmp
         .bend
 
 ;Timer trigger: post an async app message so the
-;I2C read happens in msgcmd (normal app context);
+;message requests a poll from the draw-phase dispatcher;
 ;calling the I2C library from here corrupts things.
 tmrtick
         .block
@@ -824,6 +824,12 @@ buildui
         ldy #>namebuf
         lda #pnamlen
         jsr sysjmp
+        ldy #settgt_
+        jsr getmethod
+        lda #0
+        ldx #<a_save
+        ldy #>a_save
+        jsr sysjmp
         #setobj8 this,rsmask,%00000101
         #setobj8 this,offtop,14
         #setobj8 this,offleft,24
@@ -856,21 +862,128 @@ namedone
 ;Button targets (this = button on entry)
 ;=======================================
 
+defer_radio .macro
+        .block
+        ldx #<run
+        ldy #>run
+        jmp queueradio
+run
+        .bend
+        .endm
+
+queueradio
+        .block
+        txa
+        pha
+        tya
+        pha
+        lda radiotail
+        clc
+        adc #4
+        and #63
+        cmp radiohead
+        beq full
+        ldx radiotail
+        pla
+        sta radioqueue+1,x
+        pla
+        sta radioqueue,x
+        lda this
+        sta radioqueue+2,x
+        lda this+1
+        sta radioqueue+3,x
+        txa
+        clc
+        adc #4
+        and #63
+        sta radiotail
+        jmp mkdirt
+full    pla
+        pla
+        lda #1
+        sta radiofull
+        jmp mkdirt
+        .bend
+
+dispatchradio
+        .block
+        lda radiofull
+        beq next
+        lda #0
+        sta radiofull
+        #copy16 msg_qfull,mktp
+        jsr setstat
+        jmp updui
+next    ldx radiohead
+        cpx radiotail
+        beq poll
+        #pushptr this
+        lda radioqueue,x
+        sta radiotarget
+        lda radioqueue+1,x
+        sta radiotarget+1
+        lda radioqueue+2,x
+        sta this
+        lda radioqueue+3,x
+        sta this+1
+        txa
+        clc
+        adc #4
+        and #63
+        sta radiohead
+        ldx #radiostatesz-1
+save    lda st_pwr,x
+        sta radiosaved,x
+        dex
+        bpl save
+        lda #0
+        sta radiofailed
+        jsr run
+        lda radiofailed
+        beq committed
+        ldx #radiostatesz-1
+restore lda radiosaved,x
+        sta st_pwr,x
+        dex
+        bpl restore
+        lda #1
+        sta i2cres
+        lda #0
+        sta i2cstat
+        jsr updui
+committed
+        #pullxy
+        jmp ptrthis
+run     jmp (radiotarget)
+poll    lda rssireq
+        beq done
+        lda #0
+        sta rssireq
+        jmp pollradio
+done    rts
+        .bend
+
 a_power
+        #defer_radio
         .block
         #pushptr this
         lda st_pwr
         eor #1
         sta st_pwr
         jsr r_power
+        lda i2cres
+        bne skip
         lda st_pwr
         beq skip
+        lda #0            ;match native app behavior: unmute after power-on
+        sta st_mute
         jsr applyall
 skip    jsr updui
         jmp cbend
         .bend
 
 a_ster
+        #defer_radio
         .block
         #pushptr this
         lda st_ster
@@ -882,6 +995,7 @@ a_ster
         .bend
 
 a_bass
+        #defer_radio
         .block
         #pushptr this
 .if CHIP_TEA
@@ -898,6 +1012,7 @@ a_bass
         .bend
 
 a_mute
+        #defer_radio
         .block
         #pushptr this
         lda st_mute
@@ -909,6 +1024,7 @@ a_mute
         .bend
 
 a_e50
+        #defer_radio
         .block
         #pushptr this
         lda #0
@@ -919,6 +1035,7 @@ a_e50
         .bend
 
 a_e75
+        #defer_radio
         .block
         #pushptr this
         lda #1
@@ -929,6 +1046,7 @@ a_e75
         .bend
 
 a_volu
+        #defer_radio
         .block
         #pushptr this
 .if CHIP_TEA
@@ -947,6 +1065,7 @@ done    jsr r_vol
         .bend
 
 a_vold
+        #defer_radio
         .block
         #pushptr this
 .if CHIP_TEA
@@ -964,28 +1083,39 @@ done    jsr r_vol
         .bend
 
 a_scnu
+        #defer_radio
         .block
         #pushptr this
         lda #1
         jsr r_scan
+        lda i2cres
+        bne done
         jsr r_scanwait
+        lda i2cres
+        bne done
         jsr r_getfreq
-        jsr updui
+done    jsr updui
         jmp cbend
         .bend
 
 a_scnd
+        #defer_radio
         .block
         #pushptr this
         lda #0
         jsr r_scan
+        lda i2cres
+        bne done
         jsr r_scanwait
+        lda i2cres
+        bne done
         jsr r_getfreq
-        jsr updui
+done    jsr updui
         jmp cbend
         .bend
 
 a_fmu
+        #defer_radio
         .block
         #pushptr this
         lda #10           ;+1 MHz
@@ -994,6 +1124,7 @@ a_fmu
         .bend
 
 a_fku
+        #defer_radio
         .block
         #pushptr this
         lda #1            ;+100 kHz
@@ -1002,6 +1133,7 @@ a_fku
         .bend
 
 a_fmd
+        #defer_radio
         .block
         #pushptr this
         lda #10           ;-1 MHz
@@ -1010,6 +1142,7 @@ a_fmd
         .bend
 
 a_fkd
+        #defer_radio
         .block
         #pushptr this
         lda #1            ;-100 kHz
@@ -1019,6 +1152,7 @@ a_fkd
 
 ;Select a preset radio (this=radio; tag=slot).
 a_preset
+        #defer_radio
         .block
         #pushptr this
         ldy #tag
@@ -1029,10 +1163,44 @@ a_preset
         .bend
 
 ;Save the current frequency into the next free preset
-;slot, using the typed name (or the frequency if none).
+;slot, requiring a name and a frequency not already stored.
 a_save
+        #defer_radio
         .block
         #pushptr this
+        ldx #0
+chkname lda namebuf,x
+        beq noname
+        cmp #$20
+        bne named
+        inx
+        cpx #pnamlen
+        bcc chkname
+noname  #copy16 msg_noname,mktp
+        jmp error
+named   lda #0
+        sta pidx
+chkfreq lda pidx
+        jsr precptr
+        #rdxy stmp
+        jsr ptrthis
+        ldy #0
+        lda (this),y
+        beq next
+        iny
+        lda (this),y
+        cmp st_freq
+        bne next
+        iny
+        lda (this),y
+        cmp st_freq+1
+        bne next
+        #copy16 msg_dupfreq,mktp
+        jmp error
+next    inc pidx
+        lda pidx
+        cmp #NPRESET
+        bcc chkfreq
         jsr pfree
         cmp #$ff
         beq full
@@ -1069,13 +1237,14 @@ donen   jsr updpres
         jsr savecfg        ;persist to config.i
         jmp cbend
 full    #copy16 msg_full,mktp
-        jsr setstat
+error   jsr setstat
         jmp cbend
         .bend
 
 ;Delete the currently selected preset (st_psel), if any,
 ;then persist.  The freed slot becomes the next Store target.
 a_delete
+        #defer_radio
         .block
         #pushptr this
         lda st_psel

@@ -31,6 +31,11 @@ m_seekup = $02
 m_seek   = $01
 m_enable = $01
 m_rds    = $08
+m_rclk_noncal = $08
+m_rclk_direct = $04
+m_clk_mode = $70
+m_new_method = $04
+m_soft_reset = $02
 m_tune   = $10
 m_deemph = $08
 m_voldac = $0f
@@ -53,6 +58,7 @@ i2cok   lda #0
         rts
 i2cbad  lda #1
         sta i2cres
+        sta radiofailed
         rts
 
 ;Read-modify-write a 16-bit RDA register.
@@ -89,6 +95,7 @@ i2cupdate
         lda #radioadr
         ldy updreg
         jsr i2cwritrg
+        bne cerr
 .if DEBUG
         jsr dbgwrite
 .endif
@@ -99,11 +106,23 @@ cerr    jsr i2cbad
         .bend
 
 .if DEBUG
-;Temporary debug: show the last register write in
+;Temporary debug: show the last register read/write in
 ;the status label as "0xYY = 0xZZZZ" (YY=register,
-;ZZZZ=16-bit value written). Set DEBUG=0 to remove.
+;ZZZZ=16-bit value). Set DEBUG=0 to remove.
 dbgwrite
+        ldy updreg
+        jmp dbgregister
+
+dbgread0a
+        ldy #rd_seek
+
+dbgregister
         .block
+        ;During early init, i2cupdate may run before widgets are built.
+        ;Skip log rendering until status label pointer is valid.
+        lda widgets+w_stat*2
+        ora widgets+w_stat*2+1
+        beq done
         ldx #0
         lda #"0"
         sta dbgstr,x
@@ -111,7 +130,7 @@ dbgwrite
         lda #"x"
         sta dbgstr,x
         inx
-        lda updreg
+        tya
         jsr putbyte
         lda #" "
         sta dbgstr,x
@@ -136,6 +155,7 @@ dbgwrite
         sta dbgstr,x
         #copy16 dbgstr,mktp
         jmp setstat
+done    rts
         .bend
 
 ;A -> byte, X -> dbgstr index. Emits two hex
@@ -169,18 +189,25 @@ r_power
         .block
         lda #rd_ctrl
         sta updreg
-        lda #m_dhiz
+        lda #(m_dhiz|m_seek|m_rclk_noncal|m_rclk_direct)
         sta updmh
-        sta updvh
-        lda #(m_enable|m_rds)
+        lda #(m_enable|m_rds|m_clk_mode|m_new_method|m_soft_reset)
         sta updml
         ldx st_pwr
         beq off
-        lda #(m_enable|m_rds)
-        bne set
+        lda #m_dhiz        ;power on: DHIZ=1 enables normal audio output
+        sta updvh
+        lda #m_enable
+        sta updvl
+        jmp apply
 off     lda #0
-set     sta updvl
+        sta updvl
+        lda #m_dhiz        ;power off: keep DHIZ=1 per requested behavior
+        sta updvh
+apply
         jsr i2cupdate
+        lda i2cres
+        bne done
         lda st_pwr
         beq done
         lda #rd_chan
@@ -337,6 +364,11 @@ r_scan
         sta updvl
         sta updvh         ;SEEK=0
         jsr i2cupdate
+        lda i2cres
+        beq start
+        pla
+        rts
+start
         lda #rd_ctrl
         sta updreg
         lda #(m_seekup|m_seek)
@@ -352,7 +384,7 @@ r_scan
         .bend
 
 ;Read the tuned frequency from the chip into
-;st_freq.  chan = reg3>>6;  freq = 870+chan.
+;st_freq. READCHAN = reg0a & $03ff; freq = 870+chan.
 r_getfreq
         .block
         lda #0
@@ -361,19 +393,19 @@ r_getfreq
         lda #2
         jsr i2cpreprw
         lda #radioadr
-        ldy #rd_chan
+        ldy #rd_seek
         clc
         jsr i2creadrg
-        bne fail          ;no ack -> keep model value
+        bne readfail
+        jsr i2cok
+.if DEBUG
+        jsr dbgread0a
+.endif
         lda i2cbuf
+        and #$03
         sta gfhi
         lda i2cbuf+1
         sta gflo
-        ldx #6
-sh      lsr gfhi
-        ror gflo
-        dex
-        bne sh
         lda gflo
         clc
         adc #<frq_min
@@ -402,6 +434,7 @@ clamp   #copy16 frq_min,st_freq
         lda #1
         sta frqbad        ;chip clearly not configured yet
 fail    rts
+readfail jmp i2cbad
         .bend
 
 ;Read RSSI (0..127) from status reg 0x0b.
@@ -437,11 +470,15 @@ r_stind
         clc
         jsr i2creadrg
         bne fail
+.if DEBUG
+        jsr dbgread0a
+.endif
         lda i2cbuf        ;hi byte; ST(bit10) -> hi bit2
         and #m_st
         jsr bit01
         sta st_stind
-fail    rts
+        rts
+fail    jmp i2cbad
         .bend
 
 ;Read current control/config from the chip into the
@@ -529,21 +566,37 @@ loop    jsr rdelay
         ldy #rd_seek
         clc
         jsr i2creadrg
-        bne done          ;no ack -> stop (no hardware)
+        bne fail
+        jsr i2cok
+.if DEBUG
+        jsr dbgread0a
+.endif
         lda i2cbuf
         and #m_stc
         bne done          ;complete
         dec swto
         bne loop
 done    rts
+fail    jmp i2cbad
         .bend
 
 ;Push all current settings to the chip.
 applyall
         jsr r_freq
+        lda i2cres
+        bne done
         jsr r_vol
+        lda i2cres
+        bne done
         jsr r_stereo
+        lda i2cres
+        bne done
         jsr r_bass
+        lda i2cres
+        bne done
         jsr r_deem
-        jmp r_mute
+        lda i2cres
+        bne done
+        jsr r_mute
+done    rts
 

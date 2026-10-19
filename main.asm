@@ -42,7 +42,7 @@ i2cpages = 3       ;i2c.lib.r size in pages (transport, not chip)
 ;CHIP_TEA=0 -> RDA5807 build, CHIP_TEA=1 -> TEA5767 build.
 
 ;--- debug ---
-DEBUG    = 0       ;1 = log each i2c register write in the status label; set 0 to remove
+DEBUG    = 1       ;1 = log each i2c register write in the status label; set 0 to remove
 log_ttl  = 10      ;log line auto-clears after this many 2s poll ticks (~20s)
 
 ;custom async message code (timer trigger -> msgcmd)
@@ -131,6 +131,8 @@ st_rssi  .byte 0       ;last RSSI 0..127
 st_stind .byte 0       ;stereo indicator 0/1
 st_fmtr  .byte 0       ;FM TRUE / station lock 0/1
 st_psel  .byte $ff     ;selected preset slot ($ff=none)
+st_monitor .byte 1
+radiostatesz = st_monitor-st_pwr
 
 ;--- widget pointer store (w_* indices) ---
 widgets  .word 0,0,0,0,0,0,0,0
@@ -192,6 +194,14 @@ ptmp2    .byte 0
 pidx     .byte 0
 i2cstat  .byte 0       ;displayed comms state (0=ok,1=error); UI latch
 i2cres   .byte 0       ;raw last I2C result from the driver (0=ok,1=error)
+i2cbusy  .byte 0
+radiohead .byte 0
+radiotail .byte 0
+radiofull .byte 0
+radiotarget .word 0
+radioqueue .fill 64,0
+radiofailed .byte 0
+radiosaved .fill radiostatesz,0
 logttl   .byte 0       ;log-line auto-clear countdown (2s ticks)
 rssireq  .byte 0       ;set by timer, serviced in l_update
 frqbad   .byte 0       ;1=chip read was out-of-band (unconfigured)
@@ -239,6 +249,9 @@ msg_probe .null "Probing TEA5767..."
 msg_probe .null "Probing RDA5807..."
 .endif
 msg_noi2c .null "I2C library missing"
+msg_qfull .null "Radio action queue full"
+msg_monon .null "Monitor On"
+msg_monoff .null "Monitor Off"
 .if CHIP_TEA
 msg_nordo .null "TEA5767 not found"
 msg_rdyok .null "TEA5767 detected"
@@ -249,6 +262,8 @@ msg_rdyok .null "RDA5807 detected"
 msg_i2cer .null "Failed to communicate with RDA5807"
 .endif
 msg_full  .null "Presets full"
+msg_noname .null "Channel name is required"
+msg_dupfreq .null "Frequency already in presets"
 
 s_pwron  .text "Power "
          .byte $ab,0
@@ -559,14 +574,7 @@ done     sec            ;Msg Not Handled
         rts
 
 dorssi   ;timer asked for an RSSI refresh (app ctx)
-        jsr r_rssi
-        jsr r_stind
-        lda logttl        ;log-line auto-clear countdown
-        beq lc0
-        dec logttl
-        bne lc0
-        jsr logclr
-lc0     lda #1
+        lda #1
         sta rssireq
         ldx layer+slindx
         jsr markredraw
@@ -574,33 +582,73 @@ lc0     lda #1
         rts
 
 mnuenq   ;X -> Menu Action Code
+        cpx #"m"
+        bne unselected
+        lda st_monitor
+        beq unselected
+        lda #mnu_sel
+        rts
+unselected
         lda #0 ;Enabled, Not Selected
         rts
 
 mnucmd   ;X -> Menu Action Code
         txa
-        #switch 1
-        .text "!"
-        .rta quitapp
+        #switch 2
+        .text "!m"
+        .rta quitapp,monitor
 
         sec ;Action Code Not Recognized
+        rts
+
+monitor
+        lda st_monitor
+        eor #1
+        sta st_monitor
+        #copy16 msg_monoff,mktp
+        lda st_monitor
+        beq showmonitor
+        #copy16 msg_monon,mktp
+showmonitor
+        #ldxy tkenv
+        jsr settkenv
+        jsr setstat
+        ldx layer+slindx
+        jsr markredraw
+        clc
         rts
         .bend
 
 ; ------------------------------------
+pollradio
+        .block
+        lda st_monitor
+        beq housekeeping
+        jsr r_rssi
+        jsr r_stind
+housekeeping
+        lda logttl
+        beq done
+        dec logttl
+        bne done
+        jsr logclr
+done    rts
+        .bend
+
 l_update
         .block
 
-        jsr synci2c        ;reflect the driver's last I2C result in the status label
-
-        ;Service a timer-requested RSSI refresh here,
-        ;in the draw phase (safe for I2C + Toolkit).
-        lda rssireq
-        beq draw
-        lda #0
-        sta rssireq
+        lda i2cbusy
+        beq acquire
+        clc
+        rts
+acquire lda #1
+        sta i2cbusy
         #ldxy tkenv
         jsr settkenv
+        jsr dispatchradio
+        jsr synci2c        ;reflect the driver's last I2C result in the status label
+
         jsr updbars       ;refresh bars from st_vol / st_rssi
         jsr updstind
         jsr updfmlk
@@ -609,9 +657,11 @@ l_update
         ora #tf_dirty
         sta tkenv+te_flags
 
-draw    #ldxy tkenv
+        #ldxy tkenv
         jsr tkupdate
 
+        lda #0
+        sta i2cbusy
         ldy tkenv+te_posy
         ldx tkenv+te_posx
         jmp ctx2scr

@@ -42,6 +42,7 @@ i2cok   lda #0
         rts
 i2cbad  lda #1
         sta i2cres
+        sta radiofailed
         rts
 
 ;Read 5 TEA status bytes into i2cbuf[0..4].
@@ -225,12 +226,17 @@ r_power
         jsr t_build
         jmp t_write5
 on      jsr i2creset      ;some TEA5767 modules need a fresh bus phase after standby
+        bne fail
         jsr rdelay
         jsr t_build
         jsr t_write5
+        lda i2cres
+        bne done
         jsr rdelay        ;second write improves wake reliability on clone boards
         jsr t_build
-        jmp t_write5
+        jsr t_write5
+done    rts
+fail    jmp i2cbad
         .bend
 
 ;Mute (st_mute 1=muted).
@@ -419,7 +425,16 @@ z       rts
 ;Push current settings to the chip.
 applyall
         jsr r_freq
+        lda i2cres
+        bne done
         jsr r_stereo
+        lda i2cres
+        bne done
         jsr r_bass
+        lda i2cres
+        bne done
         jsr r_deem
-        jmp r_mute
+        lda i2cres
+        bne done
+        jsr r_mute
+done    rts
