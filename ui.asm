@@ -282,11 +282,13 @@ set     sta stindstr+7
 ;Show "FM Lock X" ($ab=locked, $aa=not) right of stereo.
 updfmlk
         .block
+.if !CHIP_TEA
         lda #$aa
         ldx st_fmtr
         beq set
         lda #$ab
 set     sta fmlkstr+8
+.endif
         #copy16 fmlkstr,mktp
         ldx #w_fmlk
         jmp slabel
@@ -773,12 +775,20 @@ buildui
         #storeset widgets,w_stind
         ;FM lock indicator label (right of stereo indicator)
         #copy16 fmlkstr,mktp
+.if CHIP_TEA
+        lda #11
+.else
         lda #10
+.endif
         sta mkw
         lda #0
         sta mkflg
         lda #11
+.if CHIP_TEA
+        ldx #28
+.else
         ldx #29
+.endif
         jsr mklbl
         #storeset widgets,w_fmlk
         ;Save current frequency as a preset

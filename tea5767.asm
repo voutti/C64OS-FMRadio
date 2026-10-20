@@ -328,9 +328,14 @@ lp      jsr rdelay
         bne done
         lda i2cbuf
         and #m_ready
-        bne done
+        bne ready
         dec swto
         bne lp
+        jmp i2cbad
+ready   jsr r_getfreq
+        lda i2cres
+        bne done
+        jmp r_freq
 done    rts
         .bend
 
@@ -346,17 +351,17 @@ r_getfreq
         bne fail
         lda i2cbuf
         and #$3f
-        sta rdvhi
+        sta gfhi
         lda i2cbuf+1
-        sta rdvlo
+        sta gflo
         #copy16 frq_min,st_freq
 nxt     jsr t_freq2div
         lda divhi
-        cmp rdvhi
+        cmp gfhi
         bcc finc
         bne done
         lda divlo
-        cmp rdvlo
+        cmp gflo
         bcs done
 finc    lda st_freq
         cmp #<frq_max

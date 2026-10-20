@@ -313,8 +313,12 @@ s_empty  .null ""
 s_cell   .byte $20,0        ;1-char bar cell (reversed = solid block)
 stindstr .text "Stereo "
          .byte $aa,0
+.if CHIP_TEA
+fmlkstr  .null "FM Lock N/A"
+.else
 fmlkstr  .text "FM Lock "
          .byte $aa,0
+.endif
 ;App icon rows: the 3x3 icon glyphs are resident at screen
 ;codes $f7-$ff (top $f7-$f9, mid $fa-$fc, bottom $fd-$ff).
 icnrow0  .byte $f7,$f8,$f9,0
